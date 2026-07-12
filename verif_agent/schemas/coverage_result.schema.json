@@ -1,0 +1,49 @@
+{
+  "type": "object",
+  "required": [
+    "line",
+    "branch",
+    "functional",
+    "combined_C"
+  ],
+  "properties": {
+    "line": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "branch": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "functional": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "combined_C": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "line_hits": {
+      "type": "integer"
+    },
+    "line_total": {
+      "type": "integer"
+    },
+    "branch_hits": {
+      "type": "integer"
+    },
+    "branch_total": {
+      "type": "integer"
+    },
+    "functional_hits": {
+      "type": "integer"
+    },
+    "functional_total": {
+      "type": "integer"
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "covered_bins": 0,
+  "valid_bins": 0,
+  "functional_coverage_pct": 0.0,
+  "per_coverpoint": [],
+  "bin_summary": {
+    "total": 0,
+    "covered": 0,
+    "uncovered": 0
+  }
+}

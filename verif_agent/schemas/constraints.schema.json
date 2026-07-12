@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "required": [
+    "seed",
+    "num_seq",
+    "random_variables"
+  ],
+  "properties": {
+    "seed": {
+      "type": "integer"
+    },
+    "num_seq": {
+      "type": "integer"
+    },
+    "random_variables": {
+      "type": "array"
+    },
+    "protocol_constraints": {
+      "type": "array"
+    },
+    "coverage_feedback_updates": {
+      "type": "array"
+    }
+  }
+}

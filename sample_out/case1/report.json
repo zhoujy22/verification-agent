@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "case_name": "stream_dut",
+  "stages": {
+    "parse": "ok",
+    "skeleton_gen": "ok",
+    "simulate": "fail",
+    "coverage_collect": "fail"
+  },
+  "outputs": {
+    "design.json": "D:\\111\\tb_enviroment\\sample_out\\case1\\design.json",
+    "verification_skeleton.json": "D:\\111\\tb_enviroment\\sample_out\\case1\\verification_skeleton.json",
+    "constraints.json": "D:\\111\\tb_enviroment\\sample_out\\case1\\constraints.json",
+    "coverage_bins.json": "D:\\111\\tb_enviroment\\sample_out\\case1\\coverage_bins.json",
+    "functional_coverage.json": "D:\\111\\tb_enviroment\\sample_out\\case1\\functional_coverage.json",
+    "coverage_result.json": "D:\\111\\tb_enviroment\\sample_out\\case1\\coverage_result.json",
+    "generated_tb_dir": "D:\\111\\tb_enviroment\\sample_out\\case1\\generated_tb",
+    "generated_tests_dir": "D:\\111\\tb_enviroment\\sample_out\\case1\\generated_tests"
+  },
+  "coverage_summary": {
+    "line": 0.0,
+    "branch": 0.0,
+    "functional": 0.0,
+    "combined_C": 0.0
+  },
+  "reproducible_command": "./run.sh --rtl public_dataset/case1/rtl --top stream_dut --out sample_out\\case1 --seed 42 --num-seq 5000",
+  "environment": {
+    "python": "3.13.9",
+    "tool": "none",
+    "docker_image": "verif-agent:0.1.0",
+    "platform": "Windows-11-10.0.26200-SP0"
+  },
+  "failures": []
+}
