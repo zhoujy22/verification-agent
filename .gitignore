@@ -1,0 +1,58 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+
+# ---- Test / coverage caches ----
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Virtualenvs ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- Run / simulation outputs (generated, not source) ----
+# Per-case submission output written by the pipeline
+/submission_out/
+# Local scratch run dirs
+/_run_out/
+# cocotb / simulator build artefacts (only ever appear inside generated_tb of a run)
+sim_build/
+*.vvp
+*.fst
+*.vcd
+*.lxt
+coverage.xml
+coverage.dat
+functional_cov.json
+verilator_run.stdout
+verilator_run.stderr
+icarus_run.stdout
+icarus_run.stderr
+# NOTE: do NOT ignore generated_tb/ globally — sample_out/**/generated_tb is committed reference.
+
+# ---- Editors / IDE ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -28,9 +28,9 @@ def _verilog_wrapper(design: Design) -> str:
     port_list: list[str] = []
     for p in design.ports:
         if p.direction == "input":
-            port_wires.append(f"  input  wire {'' if p.width == 1 else f'[{p.width-1}:0] '}{p.name}")
+            port_wires.append(f"  input  wire {'' if p.width == 1 else f'[{p.width-1}:0] '}{p.name};")
         else:
-            port_wires.append(f"  output wire {'' if p.width == 1 else f'[{p.width-1}:0] '}{p.name}")
+            port_wires.append(f"  output wire {'' if p.width == 1 else f'[{p.width-1}:0] '}{p.name};")
         port_list.append(p.name)
 
     body = "  " + design.top + " dut_inst ("
@@ -194,17 +194,38 @@ def proto_seed(design: Design) -> int:
 # Makefile
 # ------------------------------------------------------------------------
 def _makefile(design: Design) -> str:
-    rel_dut = design.rtl_files[0] if design.rtl_files else "dut.v"
+    # Compilable RTL sources only — headers (.vh/.svh) are pulled in via
+    # `+incdir+` at compile time, not listed as standalone sources. Use
+    # compile_order (topologically sorted by `include relations) when present
+    # so multi-file designs build in dependency order (spec §54).
+    src_exts = (".v", ".sv")
+    sources = [f for f in (design.compile_order or design.rtl_files)
+               if f.lower().endswith(src_exts)]
+    if not sources:
+        sources = ["dut.v"]
+    # The prebuilt wrapper is appended last; render() rewrites the
+    # $(PWD)/dut_inst.v token to an absolute path after generation.
+    verilog_sources = " \\\n  ".join([*sources, "$(PWD)/dut_inst.v"])
+
+    # Include dirs → +incdir+ via COMPILE_ARGS. cocotb threads COMPILE_ARGS
+    # into both verilator (its Makefile folds COMPILE_ARGS into EXTRA_ARGS) and
+    # iverilog, so a single knob covers both simulators.
+    incdir_args = " ".join(f"+incdir+{d}" for d in design.include_dirs)
+    compile_args_line = f"\nCOMPILE_ARGS += {incdir_args}" if incdir_args else ""
+
     return f"""# Auto-generated Makefile for cocotb
 SIM ?= verilator
 TOPLEVEL_LANG ?= verilog
-VERILOG_SOURCES += {rel_dut}
-# prebuilt wrapper
-VERILOG_SOURCES += $(PWD)/dut_inst.v
+VERILOG_SOURCES += \\
+  {verilog_sources}
 TOPLEVEL ?= tb_top
 MODULE ?= tb_top
 
+# --coverage/--build/-Wno-fatal are verilator-only. Guard them so the icarus
+# fallback (SIM=icarus) does not receive flags iverilog rejects.
+ifeq ($(SIM),verilator)
 EXTRA_ARGS += --coverage --build -Wno-fatal
+endif{compile_args_line}
 
 SEED ?= 12345
 NUM_SEQ ?= 5000

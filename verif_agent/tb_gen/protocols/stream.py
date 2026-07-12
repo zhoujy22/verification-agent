@@ -106,8 +106,14 @@ class StreamScoreboard:
 
     coverpoint_py = f'''
 # cocotb-coverage hooks for stream bins
-def _sample_stream_bins(dut, cp_registry, scenario):
-    """Evaluate simple sampling conditions for the bin definitions."""
+def _sample_stream_bins(dut, cp_registry):
+    """Evaluate simple sampling conditions for the bin definitions.
+
+    Two-arg signature matches the call site in render.py's stream test body
+    (`lambda s, t: _sample_stream_bins(dut, cp_registry)`) and the AXI/SRAM
+    samplers. The old `scenario` parameter was never read and made the call
+    site raise TypeError on the first handshake.
+    """
     try:
         iv = int(dut.{in_valid}.value)
         ir = int(dut.{in_ready}.value)

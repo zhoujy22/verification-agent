@@ -17,7 +17,6 @@ verif_agent/                 # 主包（CLI、pipeline、parser、生成器等�
 ├── coverage_definer.py      # coverage_bins.json 生成（bin 必有 sampling_condition）
 ├── feedback.py              # 覆盖率反馈迭代（max 2）
 ├── reporter.py              # 7 个 JSON 输出
-├── field_mapping.py         # 字段映射适配层（公开数据集发布后启用）
 ├── rtl_parser/              # preprocess / regex / pyverilog / port_resolver
 ├── tb_gen/                  # 时钟复位 + 渲染 + 4 个协议生成器
 ├── sim/                     # Verilator / Icarus runner + 自动 fallback
@@ -94,9 +93,9 @@ python3 run.py --rtl public_dataset/case1/rtl --top stream_dut \
 
 ## 关键技术决策
 
-- **仿真器**：默认 `Verilator 5.020` (apt 锁版本)；Verilator 拒绝的 RTL 自动切到 `Icarus Verilog 11/12`。
-- **Testbench**：`cocotb 1.9.0` + `cocotb-coverage 1.1.2`。
-- **RTL 解析**：`PyVerilog 1.3.3` 主路径 + 正则兜底（保证 ports 列表在 PyVerilog 失败时仍非空）。
+- **仿真器**：默认 Verilator（cocotb Makefile，`SIM=verilator`），Verilator 拒绝的 RTL 自动切到 Icarus Verilog（`SIM=icarus`）。verilator 专用 flag（`--coverage --build -Wno-fatal`）在生成 Makefile 里用 `ifeq ($(SIM),verilator)` 包起来，不会漏给 iverilog 导致 `invalid option`。
+- **Testbench**：cocotb + cocotb-coverage（驱动/监视/记分板 + 功能 bin 命中采样）。
+- **RTL 解析**：PyVerilog 主路径（惰性导入）+ 正则兜底（保证 ports 列表在 PyVerilog 失败或未安装时仍非空）。
 - **唯一 RNG 实例**：`random.Random(int(args.seed))`，保证同 seed 输出字节相同。
 
 ## 测试
@@ -116,6 +115,6 @@ python -m pytest tests/test_bin_validity.py -q
 
 ## TODO（拿到赛方 `public_dataset/case1..case5` 后）
 
-- 在 `verif_agent/field_mapping.py` 加适配层
+- 新增 `verif_agent/field_mapping.py` 适配层（当前尚未创建）
 - 用官方 `expected/*.json` 作为对齐基准，重命名 key（如 `top` → `top_module`）
 - lock 版本签名跑通 → `diff` 通过
