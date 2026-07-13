@@ -24,6 +24,8 @@ env/
 ENV/
 
 # ---- Run / simulation outputs (generated, not source) ----
+# Public Dataset launched by the commit
+/public/
 # Per-case submission output written by the pipeline
 /submission_out/
 # Local scratch run dirs
