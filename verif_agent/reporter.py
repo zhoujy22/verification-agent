@@ -115,16 +115,33 @@ _AXI_CHAN = {"axi_aw": "AW", "axi_w": "W", "axi_b": "B",
 
 
 def _iface_of_port(port: dict) -> tuple[str | None, str | None]:
-    """Map a port to (interface_name, channel) using the classifier's
-    protocol_group (covers AXI / AXI-Stream / valid-ready stream / SRAM / APB),
-    plus the port-name prefix to tell interface instances apart (s_axi vs m_axi)."""
+    """Map a port to (interface_name, channel) using the classifier-assigned
+    interface_name (covers AXI / AXI-Stream / valid-ready stream / SRAM / APB / custom).
+
+    Falls back to protocol_group-based logic for legacy data without interface_name.
+    """
+    # Prefer classifier-assigned interface_name (set in pass 4 + LLM naming)
+    iface = port.get("interface_name") or ""
+    if iface:
+        pg = (port.get("protocol_group") or "").lower()
+        # Derive channel for AXI groups
+        if pg.startswith("axi_"):
+            return iface, _AXI_CHAN.get(pg)
+        if pg.startswith("axis_"):
+            return iface, "T"
+        if pg.startswith("stream_"):
+            return iface, "T"
+        # SRAM, APB, custom: no channel
+        return iface, None
+
+    # Fallback: derive from protocol_group + port name (legacy path)
     pg = (port.get("protocol_group") or "").lower()
     name = (port.get("name") or "").lower()
     if pg in ("", "clk", "rst", "passive"):
         return None, None
     if pg.startswith("axi_"):
-        iface = "m_axi" if name.startswith("m_axi_") else ("s_axi" if name.startswith("s_axi_") else "axi")
-        return iface, _AXI_CHAN.get(pg)
+        iface_fb = "m_axi" if name.startswith("m_axi_") else ("s_axi" if name.startswith("s_axi_") else "axi")
+        return iface_fb, _AXI_CHAN.get(pg)
     if pg.startswith("axis_"):
         return ("m_axis" if name.startswith("m_axis_") else "s_axis"), "T"
     if pg.startswith("stream_"):
@@ -134,6 +151,9 @@ def _iface_of_port(port: dict) -> tuple[str | None, str | None]:
         return "sram", None
     if pg == "apb":
         return "apb", None
+    if pg.startswith("custom:"):
+        # Use the prefix as interface name (before LLM naming is applied)
+        return pg.split(":", 1)[1], None
     return None, None
 
 
@@ -142,6 +162,7 @@ def _iface_role(iface: str) -> str:
         return "slave"
     if iface.startswith("m_") or iface == "output":
         return "master"
+    # custom/semantic names (e.g. "configuration", "status") default to slave
     return "slave"
 
 

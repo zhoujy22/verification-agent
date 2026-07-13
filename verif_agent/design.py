@@ -20,8 +20,9 @@ class Port:
     direction: Direction
     width: int                              # 1 means scalar
     sign: Sign = "unsigned"
-    protocol_group: str = "unknown"         # clk | rst | axi_aw | axi_w | axi_b | axi_ar | axi_r | sram_in | sram_out | stream_in | stream_out | passive
+    protocol_group: str = "unknown"         # clk | rst | axi_aw | axi_w | axi_b | axi_ar | axi_r | sram_in | sram_out | stream_in | stream_out | passive | custom:<prefix>
     role: Role = "passive"
+    interface_name: str = ""                # interface this port belongs to, e.g. "s_axi", "input", "configuration"
 
     def to_dict(self) -> dict:
         return asdict(self)

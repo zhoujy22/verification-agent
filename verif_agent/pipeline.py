@@ -61,8 +61,10 @@ def run(rtl_dir: str, top: str, out_dir: str, seed: int, num_seq: int = 5000,
         design = resolve_design(rtl_dir, top)
         classify(design)
         try:
-            from .llm_describe import describe as _llm_describe
-            design.description = _llm_describe(design) or {}
+            from .llm_describe import describe as _llm_describe, apply_custom_interface_names as _apply_names
+            desc = _llm_describe(design)
+            design.description = desc or {}
+            _apply_names(design, desc)
         except Exception as exc:                       # noqa: BLE001
             log.debug("LLM describe skipped: %s", exc)
             design.description = {}
