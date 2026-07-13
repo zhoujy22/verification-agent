@@ -2,8 +2,9 @@ FROM python:3.11.9-slim-bookworm
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    verilator=5.020-1 \
-    iverilog=11.3-1.1 \
+    verilator \
+    g++ \
+    iverilog \
     make=4.3-4.1 \
     git=1:2.39.5-0+deb12u2 \
     ca-certificates=20230311 \

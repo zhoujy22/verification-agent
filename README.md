@@ -50,7 +50,7 @@ requirements.txt             # 锁版本依赖
 
 ```bash
 docker build -t verif-agent:0.1.0 .
-docker run --rm -v "$PWD:/work" verif-agent:0.1.0 \
+MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/work" verif-agent:0.1.0 \
   --rtl benchmark/rtl --top dut --out submission_out/case_name \
   --seed 12345 --num-seq 5000
 ```

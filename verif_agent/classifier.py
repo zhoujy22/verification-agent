@@ -127,8 +127,13 @@ def _classify_axi(port_names: set[str]) -> tuple[bool, str]:
     Strips common prefixes (m_axi_*, s_axi_*, m0_*, etc.) before checking.
     """
     has = _has_axi_streams(port_names)
-    if not all(has.values()):
-        # Must have all five channels to claim AXI
+    # Recognise AXI if EITHER a complete write channel set (AW+W+B) OR a
+    # complete read channel set (AR+R) is present. Real IPs are frequently
+    # read-only or write-only adapters (e.g. case1's axi_adapter_rd exposes
+    # only AR+R); requiring all five channels missed those entirely.
+    write_ok = has["aw"] and has["w"] and has["b"]
+    read_ok = has["ar"] and has["r"]
+    if not (write_ok or read_ok):
         return False, "unknown"
 
     bare = {_strip_axi_prefix(n) for n in port_names}

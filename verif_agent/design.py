@@ -75,6 +75,7 @@ class Design:
     ports: list[Port] = field(default_factory=list)
     inferred_protocols: list[str] = field(default_factory=list)
     primary_protocol: str = ""
+    description: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -90,4 +91,5 @@ class Design:
             "ports": [p.to_dict() for p in self.ports],
             "inferred_protocols": list(self.inferred_protocols),
             "primary_protocol": self.primary_protocol,
+            "description": dict(self.description),
         }

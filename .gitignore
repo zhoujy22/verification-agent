@@ -44,6 +44,14 @@ verilator_run.stderr
 icarus_run.stdout
 icarus_run.stderr
 # NOTE: do NOT ignore generated_tb/ globally — sample_out/**/generated_tb is committed reference.
+# PLY / pyverilog LALR parser-table artefacts (regenerated at runtime into a temp dir)
+parsetab.py
+parser.out
+
+# ---- Secrets (.env holds API keys, never commit) ----
+.env
+.env.*
+!.env.example
 
 # ---- Editors / IDE ----
 .vscode/

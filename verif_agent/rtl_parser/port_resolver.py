@@ -114,6 +114,7 @@ def _merge_ports(
     file_path: str,
     pyv_ports: list[dict],
     rx_items: list[ModuleInfo],
+    pyv_params: list[dict] | None = None,
 ) -> tuple[list[Port], list[Parameter]]:
     """Merge PyVerilog dict with regex ModuleInfo list. PyVerilog wins on type fields."""
     ports: dict[str, Port] = {}
@@ -161,6 +162,24 @@ def _merge_ports(
                 width=int(p.get("width", 1) or 1),
                 sign=p.get("sign", "unsigned"),
             )
+
+    # 3) PyVerilog parameter augmentation. Regex often misses parametrised
+    # module headers (parens in default values break its header regex), so
+    # PyVerilog's parameters are the authoritative source for DUT parameters.
+    for pp in (pyv_params or []):
+        pname = pp.get("name", "")
+        if not pname:
+            continue
+        existing_p = params.get(pname)
+        if existing_p is None:
+            params[pname] = Parameter(
+                name=pname,
+                value=int(pp.get("value", 0) or 0),
+                width=max(int(pp.get("width", 32) or 32), 1),
+                signed=bool(pp.get("signed", False)),
+            )
+        else:
+            existing_p.value = int(pp.get("value", existing_p.value) or existing_p.value)
 
     # Reorder ports by their declaration order in the regex parse (priority),
     # then any PyVerilog-only ports appended at the end.
@@ -210,17 +229,21 @@ def resolve(rtl_dir: str | Path, top: str) -> Design:
         # Regex — always try.
         rx: ParsedFile = rx_parse(text, f)
         rx_items = to_module_info_with_values(rx)
-        # PyVerilog — try, ignore on failure.
+        # PyVerilog — try, ignore on failure. Feed RAW src — pyverilog ships
+        # its own preprocessor (`include/`ifdef/`define) and _extract_headers
+        # strips comments itself, so our preprocess() layer is redundant here.
         pyv_ports: list[dict] = []
+        pyv_params: list[dict] = []
         try:
-            py_info = pyv_parse(text, f)
+            py_info = pyv_parse(src, f)
             pyv_ports = py_info.ports
+            pyv_params = py_info.parameters
         except PyvParseError as exc:
             log.debug("PyVerilog fallback to regex on %s: %s", f, exc)
         except Exception as exc:                              # noqa: BLE001
             log.debug("PyVerilog unexpected error on %s: %s", f, exc)
 
-        ports, params = _merge_ports(f, pyv_ports, rx_items)
+        ports, params = _merge_ports(f, pyv_ports, rx_items, pyv_params)
         all_ports.extend(ports)
         all_params.extend(params)
 

@@ -51,6 +51,7 @@ def run(rtl_dir: str, top: str, out_dir: str, seed: int, num_seq: int = 5000,
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     (out / "generated_tests").mkdir(exist_ok=True)
+    case_name = _infer_case_name(rtl_dir)
 
     stages = {"parse": "pending", "skeleton_gen": "pending", "simulate": "pending", "coverage_collect": "pending"}
     failures: list[str] = []
@@ -59,6 +60,12 @@ def run(rtl_dir: str, top: str, out_dir: str, seed: int, num_seq: int = 5000,
         # Stage 1: parse + classify
         design = resolve_design(rtl_dir, top)
         classify(design)
+        try:
+            from .llm_describe import describe as _llm_describe
+            design.description = _llm_describe(design) or {}
+        except Exception as exc:                       # noqa: BLE001
+            log.debug("LLM describe skipped: %s", exc)
+            design.description = {}
         stages["parse"] = "ok"
 
         # Stage 2: coverpoints + constraints
@@ -138,6 +145,7 @@ def run(rtl_dir: str, top: str, out_dir: str, seed: int, num_seq: int = 5000,
             tool=tool,
             failures=_scrape_failures(rend.tb_dir),
             out_dir=out,
+            case_name=case_name,
         ))
 
         return PipelineResult(ok=True, stages=stages, cov_combined=combined_C)
@@ -158,6 +166,7 @@ def run(rtl_dir: str, top: str, out_dir: str, seed: int, num_seq: int = 5000,
                 tool="none",
                 failures=[str(exc)],
                 out_dir=out,
+                case_name=case_name,
             ))
         except Exception:
             log.exception("failed to write partial report")
@@ -191,6 +200,12 @@ def _scrape_failures(tb_dir) -> list[str]:
         "MISMATCH", "ERROR", "FAIL", "scoreboard"
     ))]
     return lines[:50]
+
+
+def _infer_case_name(rtl_dir: str) -> str:
+    """Derive the case name from the RTL directory (e.g. .../case1/rtl -> case1)."""
+    p = Path(rtl_dir).resolve()
+    return p.parent.name if p.name.lower() in ("rtl", "verilog", "src") else p.name
 
 
 def _reproducible_cmd(rtl_dir, top, out_dir, seed, num_seq) -> str:
