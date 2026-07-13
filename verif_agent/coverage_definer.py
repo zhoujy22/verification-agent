@@ -199,6 +199,41 @@ def _apb_bins(design: Design) -> list[dict]:
     ]
 
 
+def _axis_bins(design: Design) -> list[dict]:
+    """AXI-Stream functional bins (tvalid/tready/tdata + tlast)."""
+    return [
+        {
+            "name": "cp_axis_payload",
+            "bins": [
+                _enforce_sampling_condition({"name": "BIN_ZERO", "scenario": "all-zero payload",
+                                              "sampling_condition": "tvalid == 1 and tready == 1 and tdata == 0"}),
+                _enforce_sampling_condition({"name": "BIN_MAX",  "scenario": "all-ones payload",
+                                              "sampling_condition": "tvalid == 1 and tready == 1 and tdata == (1 << 8) - 1"}),
+                _enforce_sampling_condition({"name": "BIN_MIX",  "scenario": "mixed payload",
+                                              "sampling_condition": "tvalid == 1 and tready == 1 and 0 < tdata < (1 << 8) - 1"}),
+            ],
+        },
+        {
+            "name": "cp_axis_backpressure",
+            "bins": [
+                _enforce_sampling_condition({"name": "BIN_NO_BP", "scenario": "full throughput",
+                                              "sampling_condition": "tvalid == 1 and tready == 1"}),
+                _enforce_sampling_condition({"name": "BIN_BP",    "scenario": "backpressure applied",
+                                              "sampling_condition": "tvalid == 1 and tready == 0"}),
+            ],
+        },
+        {
+            "name": "cp_axis_last",
+            "bins": [
+                _enforce_sampling_condition({"name": "BIN_MID",  "scenario": "mid-packet beat",
+                                              "sampling_condition": "tvalid == 1 and tready == 1 and tlast == 0"}),
+                _enforce_sampling_condition({"name": "BIN_LAST", "scenario": "packet last beat",
+                                              "sampling_condition": "tvalid == 1 and tready == 1 and tlast == 1"}),
+            ],
+        },
+    ]
+
+
 def _generic_bins(design: Design) -> list[dict]:
     """Single 'we ran the sampler' bin for the generic fallback path."""
     return [
@@ -229,16 +264,18 @@ def _passive_bins(design: Design) -> list[dict]:
 def define(design: Design) -> dict:
     """Return a `coverage_bins.json`-shaped dict, populated by protocol family."""
     coverpoints: list[dict] = []
-    proto = design.primary_protocol
-
-    if proto == "AXI4" or proto == "AXI4-Lite":
-        coverpoints.extend(_axi_bins(design))
-    if proto == "SRAM":
-        coverpoints.extend(_sram_bins(design))
-    if proto == "valid_ready_stream":
-        coverpoints.extend(_stream_bins(design))
-    if proto == "APB":
-        coverpoints.extend(_apb_bins(design))
+    protos = design.inferred_protocols or ([design.primary_protocol] if design.primary_protocol else [])
+    for proto in protos:
+        if proto in ("AXI4", "AXI4-Lite"):
+            coverpoints.extend(_axi_bins(design))
+        elif proto == "SRAM":
+            coverpoints.extend(_sram_bins(design))
+        elif proto == "valid_ready_stream":
+            coverpoints.extend(_stream_bins(design))
+        elif proto == "APB":
+            coverpoints.extend(_apb_bins(design))
+        elif proto == "AXI-Stream":
+            coverpoints.extend(_axis_bins(design))
 
     # If no recognized protocol, fall back to a single sampler-tick bin so we
     # at least record one valid bin (per spec §34 — must have sampling_condition).

@@ -237,11 +237,18 @@ def _parse_nonansi_portnames(portlist: str) -> list[str]:
     return names
 
 
-def parse(text: str, filename: str = "<unknown>") -> ParsedFile:
-    """Parse one Verilog source string. Always returns *something* — empty fields are OK."""
+def parse(text: str, filename: str = "<unknown>", top: str | None = None) -> ParsedFile:
+    """Parse one Verilog source string. Always returns *something* — empty fields are OK.
+
+    If `top` is given, only that module's header is parsed (submodules skipped).
+    """
     src = preprocess(text)
-    hdr = _MODULE_HDR_RE.search(src)
     parsed = ParsedFile(filename=filename)
+    hdr = None
+    for m in _MODULE_HDR_RE.finditer(src):
+        if top is None or m.group("name") == top:
+            hdr = m
+            break
     if not hdr:
         return parsed
     parsed.module_name = hdr.group("name")

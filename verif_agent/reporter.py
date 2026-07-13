@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import platform
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -108,54 +109,61 @@ def _sim_name(inputs: ReporterInputs) -> str:
     return _SIM_NAMES.get((inputs.tool or "").lower(), inputs.tool or "none")
 
 
-def _axi_interface_of(port_name: str) -> str | None:
-    ln = port_name.lower()
-    if ln.startswith("s_axi_"):
-        return "s_axi"
-    if ln.startswith("m_axi_"):
-        return "m_axi"
-    return None
+# AXI channel mapping: classifier protocol_group -> interface channel letter
+_AXI_CHAN = {"axi_aw": "AW", "axi_w": "W", "axi_b": "B",
+             "axi_ar": "AR", "axi_r": "R", "axi_a": "A"}
 
 
-def _axi_channel(bare: str) -> str | None:
-    """bare = port name with the s_axi_/m_axi_ prefix already removed."""
-    if bare.startswith("aw"):
-        return "AW"
-    if bare.startswith("ar"):
-        return "AR"
-    if bare.startswith("w"):
-        return "W"
-    if bare.startswith("b"):
-        return "B"
-    if bare.startswith("r"):
-        return "R"
-    return None
+def _iface_of_port(port: dict) -> tuple[str | None, str | None]:
+    """Map a port to (interface_name, channel) using the classifier's
+    protocol_group (covers AXI / AXI-Stream / valid-ready stream / SRAM / APB),
+    plus the port-name prefix to tell interface instances apart (s_axi vs m_axi)."""
+    pg = (port.get("protocol_group") or "").lower()
+    name = (port.get("name") or "").lower()
+    if pg in ("", "clk", "rst", "passive"):
+        return None, None
+    if pg.startswith("axi_"):
+        iface = "m_axi" if name.startswith("m_axi_") else ("s_axi" if name.startswith("s_axi_") else "axi")
+        return iface, _AXI_CHAN.get(pg)
+    if pg.startswith("axis_"):
+        return ("m_axis" if name.startswith("m_axis_") else "s_axis"), "T"
+    if pg.startswith("stream_"):
+        m = re.match(r"^(.+?)_(valid|ready|data)$", name)
+        return (m.group(1) if m else "stream"), "T"
+    if pg == "sram":
+        return "sram", None
+    if pg == "apb":
+        return "apb", None
+    return None, None
+
+
+def _iface_role(iface: str) -> str:
+    if iface.startswith("s_") or iface in ("input", "sram", "apb"):
+        return "slave"
+    if iface.startswith("m_") or iface == "output":
+        return "master"
+    return "slave"
 
 
 def _build_interfaces(ports: list[dict]) -> dict:
-    """Group AXI ports by s_axi / m_axi interface with detected channels."""
-    groups: dict[str, list[str]] = {}
+    """Group ports into interfaces using protocol_group; channels come from AXI groups."""
+    chans: dict[str, set[str]] = {}
     for p in ports:
-        iface = _axi_interface_of(p.get("name", ""))
-        if iface:
-            groups.setdefault(iface, []).append(p["name"])
-    interfaces: dict[str, dict] = {}
-    for iface, names in groups.items():
-        chans = set()
-        for n in names:
-            c = _axi_channel(n.lower()[len(iface) + 1:])
-            if c:
-                chans.add(c)
-        role = "slave" if iface == "s_axi" else "master"
-        interfaces[iface] = {"role": role, "channels": sorted(chans)}
-    return interfaces
+        iface, ch = _iface_of_port(p)
+        if not iface:
+            continue
+        chans.setdefault(iface, set())
+        if ch:
+            chans[iface].add(ch)
+    return {iface: {"role": _iface_role(iface), "channels": sorted(cs)}
+            for iface, cs in chans.items()}
 
 
 def _infer_drivers(ports: list[dict]) -> list[dict]:
-    """Group AXI ports by interface -> one driver each (drives inputs, observes outputs)."""
+    """One driver per interface (drives the interface's DUT inputs, observes its outputs)."""
     groups: dict[str, dict[str, list[str]]] = {}
     for p in ports:
-        iface = _axi_interface_of(p.get("name", ""))
+        iface, _ = _iface_of_port(p)
         if not iface:
             continue
         g = groups.setdefault(iface, {"drives": [], "observes": []})
@@ -163,30 +171,20 @@ def _infer_drivers(ports: list[dict]) -> list[dict]:
             g["drives"].append(p["name"])
         else:
             g["observes"].append(p["name"])
-    drivers = []
-    for iface, g in groups.items():
-        drivers.append({
-            "name": f"{iface}_driver",
-            "interface": iface,
-            "driver": "cocotb AXI driver",
-            "drives": g["drives"],
-            "observes": g["observes"],
-            "traffic": "random constrained AXI transactions",
-        })
-    return drivers
+    return [{"name": f"{iface}_driver", "interface": iface, "driver": "cocotb driver",
+             "drives": g["drives"], "observes": g["observes"], "traffic": ""} for iface, g in groups.items()]
 
 
 def _infer_monitors(ports: list[dict]) -> list[dict]:
-    observes = [p["name"] for p in ports if p.get("direction") in ("output", "inout")]
-    if not observes:
-        return []
-    return [{
-        "name": "output_monitor",
-        "interface": "axi",
-        "monitor": "AXI output sampler",
-        "observes": observes,
-        "checks": "handshake and response correctness",
-    }]
+    """One monitor per interface, observing only that interface's DUT outputs."""
+    groups: dict[str, list[str]] = {}
+    for p in ports:
+        iface, _ = _iface_of_port(p)
+        if not iface or p.get("direction") not in ("output", "inout"):
+            continue
+        groups.setdefault(iface, []).append(p["name"])
+    return [{"name": f"{iface}_monitor", "interface": iface, "monitor": "cocotb monitor",
+             "observes": names, "checks": ""} for iface, names in groups.items()]
 
 
 # ---------------------------------------------------------------------------

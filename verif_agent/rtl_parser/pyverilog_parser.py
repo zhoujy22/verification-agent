@@ -165,8 +165,13 @@ def _ports_of(module_def, params: dict[str, int]) -> list[dict]:
 
 # --- entry point -----------------------------------------------------------
 
-def parse(text: str, filename: str = "<unknown>") -> PyVerilogInfo:
-    """Run PyVerilog on header-only source. Raises ParseError on failure."""
+def parse(text: str, filename: str = "<unknown>", top: str | None = None) -> PyVerilogInfo:
+    """Run PyVerilog on header-only source. Raises ParseError on failure.
+
+    If `top` is given, only that module's ports/params are extracted — modules
+    instantiated inside the file (submodules) are skipped, so multi-file designs
+    don't pollute the top-level port list.
+    """
     try:
         from pyverilog.vparser.parser import parse as pyv_parse   # type: ignore
     except ImportError as exc:
@@ -192,8 +197,11 @@ def parse(text: str, filename: str = "<unknown>") -> PyVerilogInfo:
     for d in getattr(ast.description, "definitions", []):
         if type(d).__name__ != "ModuleDef":
             continue
+        d_name = str(getattr(d, "name", "") or "")
+        if top and d_name != top:
+            continue   # only the requested top module — skip instantiated submodules
         if not info.module_name:
-            info.module_name = str(getattr(d, "name", "") or "")
+            info.module_name = d_name
         params = _params_of(d)
         info.ports.extend(_ports_of(d, params))
         for nm, val in params.items():

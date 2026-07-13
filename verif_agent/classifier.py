@@ -35,6 +35,9 @@ _AXI_AR_SIGNALS = {
     "arlock", "arcache", "arqos", "arregion", "aruser",
 }
 _AXI_R_SIGNALS = {"rvalid", "rready", "rdata", "rresp", "rlast", "rid"}
+# Unified address channel (AXI address-only crossbar etc.): a* not split into ar/aw
+_AXI_A_SIGNALS = {"avalid", "aready", "aaddr", "aprot", "aqos", "aid",
+                  "aregion", "alock", "acache", "auser"}
 
 # Prefixes commonly seen in real RTL — many IP cores rename the AXI signals
 # with a per-port prefix to disambiguate (m_axi_*, s_axi_*, m0_*).
@@ -118,6 +121,7 @@ def _has_axi_streams(port_names: set[str]) -> dict[str, bool]:
         "b":  any(b in _AXI_B_SIGNALS  for b in bare),
         "ar": any(b in _AXI_AR_SIGNALS for b in bare),
         "r":  any(b in _AXI_R_SIGNALS  for b in bare),
+        "a":  any(b in _AXI_A_SIGNALS  for b in bare),
     }
 
 
@@ -133,7 +137,8 @@ def _classify_axi(port_names: set[str]) -> tuple[bool, str]:
     # only AR+R); requiring all five channels missed those entirely.
     write_ok = has["aw"] and has["w"] and has["b"]
     read_ok = has["ar"] and has["r"]
-    if not (write_ok or read_ok):
+    addr_ok = has["a"]   # unified address-only channel (e.g. address crossbar)
+    if not (write_ok or read_ok or addr_ok):
         return False, "unknown"
 
     bare = {_strip_axi_prefix(n) for n in port_names}
@@ -164,14 +169,39 @@ def _classify_sram(port_names: set[str]) -> bool:
 
 
 def _classify_stream(port_names: set[str]) -> bool:
-    """valid/ready stream: at least one {valid, ready, data} triple and no AW/W channel."""
-    has = _has_axi_streams(port_names)
-    if has["aw"] or has["w"] or has["b"]:
-        return False
-    # any *_valid, *_ready, *_data
+    """valid/ready stream: at least one {valid, ready, data} triple.
+
+    Independent of AXI presence — a bridge design (e.g. stream<->AXI) carries
+    both, so we must not reject stream just because AW/W channels also exist.
+    """
     def has_suffix(suffix: str) -> bool:
         return any(p.endswith(f"_{suffix}") for p in port_names)
     return has_suffix("valid") and has_suffix("ready") and has_suffix("data")
+
+
+# AXI-Stream (tvalid/tready/tdata + optional tlast/tstrb/tkeep/tid/tdest/tuser).
+# Real IP prefixes these s_axis_*/m_axis_*/axis_*; the bare signal is tvalid/...
+_AXIS_SIGNALS = {"tvalid", "tready", "tdata", "tlast", "tstrb", "tkeep",
+                 "tid", "tdest", "tuser"}
+_AXIS_PREFIXES = ("s_axis_", "m_axis_", "axis_")
+
+
+def _strip_axis_prefix(name: str) -> str:
+    ln = name.lower()
+    for pfx in _AXIS_PREFIXES:
+        if ln.startswith(pfx):
+            return ln[len(pfx):]
+    return ln
+
+
+def _classify_axis_stream(port_names: set[str]) -> bool:
+    """AXI-Stream: tvalid + tready + tdata all present (robust to s_axis_/m_axis_ prefix).
+
+    Distinct from valid/ready stream (abc_valid/abc_ready/abc_data) — AXI-Stream
+    uses the fixed t-prefixed handshake names.
+    """
+    bare = {_strip_axis_prefix(n) for n in port_names}
+    return {"tvalid", "tready", "tdata"} <= bare
 
 
 def _sram_signal_direction(p_name: str) -> str:
@@ -199,6 +229,9 @@ def _stream_signal_direction(p_name: str, side: str) -> str:
 def _axi_signal_group(p_name: str) -> tuple[str, str]:
     """Return (channel, role) for an AXI signal name."""
     n = p_name.lower()
+    # unified address channel first (aready would otherwise match the "ar" rule)
+    if n in _AXI_A_SIGNALS:
+        return ("axi_a", "monitor") if n == "aready" else ("axi_a", "driver")
     if n.startswith("aw") or n == "awid":
         return "axi_aw", "driver"
     if n.startswith("w"):
@@ -221,6 +254,7 @@ def classify(design: Design) -> Design:
     is_apb = _classify_apb(port_names_lower)
     is_sram = _classify_sram(port_names_lower)
     is_stream = _classify_stream(port_names_lower)
+    is_axis = _classify_axis_stream(port_names_lower)
 
     protocols: list[str] = []
     if is_axi:
@@ -231,6 +265,8 @@ def classify(design: Design) -> Design:
         protocols.append("SRAM")
     if is_stream:
         protocols.append("valid_ready_stream")
+    if is_axis:
+        protocols.append("AXI-Stream")
 
     design.inferred_protocols = protocols
     design.primary_protocol = protocols[0] if protocols else ""
@@ -288,7 +324,7 @@ def classify(design: Design) -> Design:
         if is_axi:
             bare = _strip_axi_prefix(p.name)
             if bare in (set(_AXI_AW_SIGNALS) | set(_AXI_W_SIGNALS) | set(_AXI_B_SIGNALS)
-                        | set(_AXI_AR_SIGNALS) | set(_AXI_R_SIGNALS)):
+                        | set(_AXI_AR_SIGNALS) | set(_AXI_R_SIGNALS) | set(_AXI_A_SIGNALS)):
                 chan, role = _axi_signal_group(bare)
                 p.protocol_group = chan
                 p.role = role
@@ -312,6 +348,18 @@ def classify(design: Design) -> Design:
             p.protocol_group = "stream_in" if side == "in" else "stream_out"
             p.role = _stream_signal_direction(p.name, side)
             continue
+
+        if is_axis:
+            bare = _strip_axis_prefix(p.name)
+            if bare in _AXIS_SIGNALS:
+                # m_axis_* = DUT produces (output stream); s_axis_/axis_* = DUT consumes.
+                is_out = ln.startswith("m_axis_")
+                p.protocol_group = "axis_out" if is_out else "axis_in"
+                if is_out:
+                    p.role = "driver" if bare == "tready" else "monitor"
+                else:
+                    p.role = "monitor" if bare == "tready" else "driver"
+                continue
 
         p.protocol_group = "passive"
         p.role = "passive"

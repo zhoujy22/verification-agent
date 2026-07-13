@@ -18,7 +18,7 @@ from ..design import Clock, Design, Parameter, Reset, Port
 from .preprocess import preprocess
 from .pyverilog_parser import ParseError as PyvParseError
 from .pyverilog_parser import parse as pyv_parse
-from .regex_parser import ModuleInfo, ParsedFile, parse as rx_parse, to_module_info_with_values
+from .regex_parser import ModuleInfo, ParsedFile, parse as rx_parse, to_module_info_with_values, _eval_param_expr
 
 log = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ def _merge_ports(
         if item.param:
             params[item.name] = Parameter(
                 name=item.name,
-                value=int(item.param_value) if item.param_value else 0,
+                value=_eval_param_expr(item.param_value) if item.param_value else 0,
                 width=max(item.width, 32),
                 signed=(item.sign == "signed"),
             )
@@ -227,7 +227,7 @@ def resolve(rtl_dir: str | Path, top: str) -> Design:
         src = Path(f).read_text(encoding="utf-8", errors="ignore")
         text = preprocess(src, include_dirs)
         # Regex — always try.
-        rx: ParsedFile = rx_parse(text, f)
+        rx: ParsedFile = rx_parse(text, f, top)
         rx_items = to_module_info_with_values(rx)
         # PyVerilog — try, ignore on failure. Feed RAW src — pyverilog ships
         # its own preprocessor (`include/`ifdef/`define) and _extract_headers
@@ -235,7 +235,7 @@ def resolve(rtl_dir: str | Path, top: str) -> Design:
         pyv_ports: list[dict] = []
         pyv_params: list[dict] = []
         try:
-            py_info = pyv_parse(src, f)
+            py_info = pyv_parse(src, f, top)
             pyv_ports = py_info.ports
             pyv_params = py_info.parameters
         except PyvParseError as exc:
