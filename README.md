@@ -21,7 +21,7 @@ pip install -r requirements.txt
          --top axi_adapter_rd --out out/case1 --seed 12345 --num-seq 5000
 ```
 
-需要 Python 3.11+，以及 `verilator` 或 `iverilog`（agent 自检仿真用，可选）。
+需要 Python 3.8+，以及 `verilator` 或 `iverilog`（agent 自检仿真用，可选）。
 
 ### 方式 B：Docker（Linux）
 
