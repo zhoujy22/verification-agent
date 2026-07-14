@@ -56,6 +56,7 @@ class VerilatorRunner:
 
         coverage_dat = tb_dir / "coverage.dat"
         coverage_xml = tb_dir / "coverage.xml"
+        coverage_info = tb_dir / "coverage.info"
         functional_cov = tb_dir / "functional_cov.json"
 
         if proc.returncode != 0:
@@ -64,12 +65,26 @@ class VerilatorRunner:
                 f"{(proc.stderr or '')[-1000:]}"
             )
 
+        # Verilator emits a binary coverage.dat. Convert it to lcov .info with
+        # the verilator_coverage tool so coverage/line_branch.parse_verilator_info
+        # can read real line/branch hit counts. Without this the binary .dat is
+        # misparsed (-> 0% line/branch) even though the DUT ran fully.
+        if coverage_dat.exists() and shutil.which("verilator_coverage") is not None:
+            try:
+                subprocess.run(
+                    ["verilator_coverage", "--write-info", str(coverage_info), str(coverage_dat)],
+                    capture_output=True, text=True, timeout=60,
+                )
+            except Exception:                              # noqa: BLE001
+                pass
+
         return RunResult(
             exit_code=proc.returncode,
             stdout_path=stdout_path,
             stderr_path=stderr_path,
             coverage_dat=coverage_dat if coverage_dat.exists() else None,
             coverage_xml=coverage_xml if coverage_xml.exists() else None,
+            coverage_info=coverage_info if coverage_info.exists() else None,
             functional_cov=functional_cov if functional_cov.exists() else None,
             log_tail=(proc.stdout or "")[-1500:],
         )

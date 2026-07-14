@@ -65,3 +65,60 @@ def parse_icarus_dat(dat_path) -> tuple[int, int, int, int]:
     total = len(counts)
     # Map to line coverage (rough); branch not derivable from .dat alone.
     return hits, max(total, 1), 0, 0
+
+
+def parse_verilator_info(info_path) -> tuple[int, int, int, int]:
+    """Parse a Verilator-generated lcov ``.info`` file.
+
+    ``verilator_coverage --write-info out.info coverage.dat`` emits standard
+    lcov format. We ignore the auto-generated wrapper (``dut_inst.v``) and the
+    ``tb_top`` itself — only the real RTL source files carry meaningful DUT
+    line/branch coverage. We sum over every ``SF:`` section whose path is NOT
+    the wrapper / testbench.
+
+    Returns (line_hits, line_total, branch_hits, branch_total).
+    """
+    p = Path(info_path)
+    if not p.exists() or p.stat().st_size == 0:
+        return 0, 0, 0, 0
+    text = p.read_text(encoding="utf-8", errors="ignore")
+
+    line_hits = line_total = branch_hits = branch_total = 0
+    in_file = False
+    skip_file = False
+    cur_file = None
+    for raw in text.splitlines():
+        if raw.startswith("SF:"):
+            cur_file = raw[3:]
+            # Skip generated wrapper / testbench artifacts — they are not DUT logic.
+            base = Path(cur_file).name.lower()
+            skip_file = base in ("dut_inst.v", "tb_top.v", "tb_top.py")
+            in_file = True
+            continue
+        if raw == "end_of_record":
+            in_file = False
+            cur_file = None
+            continue
+        if not in_file or skip_file:
+            continue
+        if raw.startswith("DA:"):
+            # DA:<line>,<count>[,<checksum>]
+            parts = raw[3:].split(",")
+            try:
+                count = int(parts[1])
+            except (IndexError, ValueError):
+                continue
+            line_total += 1
+            if count > 0:
+                line_hits += 1
+        elif raw.startswith("BRDA:"):
+            # BRDA:<line>,<block>,<branch>,<taken>  (taken "-" == 0/never)
+            parts = raw[5:].split(",")
+            try:
+                taken = parts[3]
+            except IndexError:
+                continue
+            branch_total += 1
+            if taken not in ("-", "0", ""):
+                branch_hits += 1
+    return line_hits, max(line_total, 1), branch_hits, max(branch_total, 1)

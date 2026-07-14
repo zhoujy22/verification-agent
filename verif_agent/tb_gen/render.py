@@ -24,13 +24,25 @@ from .protocols.base import ProtocolOutput
 # Verilog wrapper that instantiates the top DUT
 # ------------------------------------------------------------------------
 def _verilog_wrapper(design: Design) -> str:
-    port_wires: list[str] = []
+    """Verilog wrapper that instantiates the DUT.
+
+    Crucially, the signals the testbench drives (DUT *input* ports) are declared
+    as internal ``reg`` — not as ``tb_top`` ports. A previous version declared
+    every DUT input as an ``input wire`` port on the top module, which has no
+    external driver under the simulator; cocotb's ``dut.<sig>.value = ...``
+    writes were silently dropped (VPI drives a port that nothing sources), so
+    the DUT saw constant 0/X and never advanced. Declaring them as ``reg``
+    makes cocotb's writes take effect immediately, exactly like the reference
+    cocotb top files (``reg s_axi_arvalid = 0;``).
+    """
+    decls: list[str] = []
     port_list: list[str] = []
     for p in design.ports:
+        rng = "" if p.width == 1 else f"[{p.width-1}:0] "
         if p.direction == "input":
-            port_wires.append(f"  input  wire {'' if p.width == 1 else f'[{p.width-1}:0] '}{p.name};")
+            decls.append(f"  reg  {rng}{p.name};")
         else:
-            port_wires.append(f"  output wire {'' if p.width == 1 else f'[{p.width-1}:0] '}{p.name};")
+            decls.append(f"  wire {rng}{p.name};")
         port_list.append(p.name)
 
     body = "  " + design.top + " dut_inst ("
@@ -39,8 +51,8 @@ def _verilog_wrapper(design: Design) -> str:
 
     return f"""// Auto-generated wrapper for {design.top}
 `timescale 1ns/1ps
-module tb_top({", ".join(port_list)});
-{chr(10).join(port_wires)}
+module tb_top;
+{chr(10).join(decls)}
 {body}endmodule
 """
 
@@ -152,11 +164,8 @@ async def run_main(dut):
 @cocotb.test()
 async def run_main(dut):
     await setup_clock_reset(dut)
-    txns: list = []
-    cocotb.start_soon(axi_lite_monitor(dut, txns,
-                                         coverpoint_sampler=lambda s, t: _sample_axi_bins(dut, cp_registry)))
-    sb = AxiLiteScoreboard(txns)
-    await axi_lite_driver(dut, RNG, NUM_SEQ)
+    sb = AxiScoreboard()
+    await axi_driver(dut, RNG, NUM_SEQ, sb)
     await Timer(200, units="ns")
     passed = sb.check()
     await _dump_functional_cov(dut, cp_registry, Path(__file__).parent / "functional_cov.json")
@@ -221,10 +230,12 @@ VERILOG_SOURCES += \\
 TOPLEVEL ?= tb_top
 MODULE ?= tb_top
 
-# --coverage/--build/-Wno-fatal are verilator-only. Guard them so the icarus
+# Verilator-only coverage/build flags. `--coverage-line` + `--coverage-toggle`
+# (toggle ≈ branch coverage) instead of bare `--coverage`, so lcov .info
+# carries BOTH DA: (line) and BRDA: (branch) records. Guarded so the icarus
 # fallback (SIM=icarus) does not receive flags iverilog rejects.
 ifeq ($(SIM),verilator)
-EXTRA_ARGS += --coverage --build -Wno-fatal
+EXTRA_ARGS += --coverage-line --coverage-toggle --build -Wno-fatal
 endif{compile_args_line}
 
 SEED ?= 12345

@@ -22,6 +22,7 @@ from .coverage import (
     compute_combined,
     parse_cocotb_json,
     parse_icarus_dat,
+    parse_verilator_info,
     parse_verilator_xml,
     reconcile_with_bins,
 )
@@ -176,6 +177,11 @@ def run(rtl_dir: str, top: str, out_dir: str, seed: int, num_seq: int = 5000,
 
 
 def _read_line_branch(sim_result, tool):
+    # Prefer the lcov .info produced by `verilator_coverage --write-info` —
+    # it carries real line + branch counts. Fall back to coverage.xml (older
+    # verilator), then the binary .dat (icarus).
+    if sim_result.coverage_info and Path(sim_result.coverage_info).exists():
+        return parse_verilator_info(sim_result.coverage_info)
     if sim_result.coverage_xml and Path(sim_result.coverage_xml).exists():
         return parse_verilator_xml(sim_result.coverage_xml)
     if sim_result.coverage_dat and Path(sim_result.coverage_dat).exists():

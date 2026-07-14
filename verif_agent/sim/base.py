@@ -14,6 +14,7 @@ class RunResult:
     stderr_path: Path
     coverage_dat: Optional[Path] = None
     coverage_xml: Optional[Path] = None
+    coverage_info: Optional[Path] = None
     functional_cov: Optional[Path] = None
     log_tail: str = ""
 

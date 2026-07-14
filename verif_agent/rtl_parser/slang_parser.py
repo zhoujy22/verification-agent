@@ -108,16 +108,18 @@ def parse(files: list[str], top: str) -> SlangInfo:
         # Maybe the module exists but isn't instantiated at top level; try by
         # definition lookup so an un-instantiated top module still parses.
         defs = getattr(root, "definitions", None)
-        found = False
+        found = None
         if defs is not None:
             try:
                 for d in defs:
                     if getattr(d, "name", "") == top:
-                        found = True
+                        found = d
                         break
             except Exception:                              # noqa: BLE001
                 pass
-        if not found:
+        if found is not None:
+            inst = found
+        else:
             avail = [getattr(s, "name", "") for s in root
                      if type(s).__name__ == "InstanceSymbol"]
             raise SlangParseError(

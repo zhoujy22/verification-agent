@@ -9,6 +9,7 @@ dist/
 pip-wheel-metadata/
 
 # ---- Test / coverage caches ----
+_debug_*
 .pytest_cache/
 .coverage
 .coverage.*
