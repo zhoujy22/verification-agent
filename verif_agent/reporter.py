@@ -63,8 +63,8 @@ def write_all(inputs: ReporterInputs) -> None:
     (out_dir / "coverage_result.json").write_text(_pretty(_to_coverage_result(inputs)), encoding="utf-8")
 
     out_paths = {f: str((out_dir / f).resolve()) for f in REQUIRED_FILES[:6]}
-    out_paths["generated_tb_dir"] = str((out_dir / "generated_tb").resolve())
-    out_paths["generated_tests_dir"] = str((out_dir / "generated_tests").resolve())
+    out_paths["generated_tb_dir"] = str((out_dir / "generated" / "tb").resolve())
+    out_paths["generated_tests_dir"] = str((out_dir / "generated" / "tests").resolve())
 
     report = {
         "schema_version": 1,
@@ -249,7 +249,7 @@ def _to_design(inputs: ReporterInputs) -> dict:
         "name": _case(inputs),
         "rtl": f"rtl/{Path(rtl_first[0]).name}" if rtl_first else "",
         "top_module": d.get("top", ""),
-        "generated_cocotb_top": "generated_tb/dut_inst.v",
+        "generated_cocotb_top": "generated/tb/dut_inst.v",
         "function": function,
         "configuration_under_test": {p.get("name"): p.get("value") for p in params},
         "clock_reset": {**cblock, **rblock},
@@ -319,7 +319,7 @@ def _to_coverage_result(inputs: ReporterInputs) -> dict:
         "simulator": {"name": _sim_name(inputs), "version": ""},
         "run": {
             "type": "cocotb",
-            "test": "generated_tb/tb_top.py",
+            "test": "generated/tb/tb_top.py",
             "seed": c.get("seed"),
             "sequence_count": c.get("num_seq"),
             "sim_time_ns": 0,
@@ -369,31 +369,38 @@ def _to_skeleton(inputs: ReporterInputs) -> dict:
     resets = d.get("reset") or []
     cr = s.get("clock_reset") or {}
 
-    # Prefer inferring drivers/monitors from port DIRECTION — this correctly
-    # puts DUT inputs into `drives` and DUT outputs into `observes`, grouped by
-    # AXI interface (s_axi / m_axi). The skeleton's own driver list lumps every
-    # port (incl. clk/rst and both directions) into handles_ports with no split,
-    # so it is only used as a non-AXI fallback.
-    input_drivers = _infer_drivers(ports)
-    if not input_drivers:
+    # The skeleton's drivers/monitors come straight from the tb generator
+    # (render.py), which knows the REAL cocotb driver function name, the
+    # concrete driver class, and which DUT ports each interface drives/observes.
+    # Using render's list keeps verification_skeleton.json consistent with
+    # tb_top.py (same driver function name, same ports). Earlier this re-inferred
+    # drivers from ports and invented names like "s_axis_driver" that don't exist
+    # in tb_top.py — declaration vs implementation mismatch. Inferring is now
+    # only a last-resort fallback when the generator emitted nothing.
+    sdrivers = s.get("drivers") or []
+    smonitors = s.get("monitors") or []
+    if sdrivers:
         input_drivers = [{
             "name": dr.get("name"),
             "interface": dr.get("interface"),
-            "driver": dr.get("name"),
-            "drives": dr.get("handles_ports") or [],
-            "observes": [],
-            "traffic": "",
-        } for dr in (s.get("drivers") or [])]
+            "driver": dr.get("driver", "cocotb driver"),
+            "drives": dr.get("drives") or [],
+            "observes": dr.get("observes") or [],
+            "traffic": dr.get("traffic", ""),
+        } for dr in sdrivers]
+    else:
+        input_drivers = _infer_drivers(ports)
 
-    output_monitors = _infer_monitors(ports)
-    if not output_monitors:
+    if smonitors:
         output_monitors = [{
             "name": m.get("name"),
             "interface": m.get("interface"),
-            "monitor": m.get("name"),
-            "observes": [sm.get("port") for sm in m.get("samples") or []],
-            "checks": "",
-        } for m in (s.get("monitors") or [])]
+            "monitor": m.get("monitor", "cocotb monitor"),
+            "observes": m.get("observes") or [],
+            "checks": m.get("checks", ""),
+        } for m in smonitors]
+    else:
+        output_monitors = _infer_monitors(ports)
 
     # Multi-clock/multi-reset support: case3 has clk + input_clk + output_clk,
     # plus several reset-related signals (rst / input_rst / output_rst /

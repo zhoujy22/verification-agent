@@ -171,20 +171,49 @@ async def run_main(dut):
     await _dump_functional_cov(dut, cp_registry, Path(__file__).parent / "functional_cov.json")
     assert passed, f"scoreboard failures: {sb.failures[:10]}"
 '''
+    if proto.name == "axi_stream":
+        return '''
+@cocotb.test()
+async def run_main(dut):
+    await setup_clock_reset(dut)
+    sb = AxiStreamScoreboard()
+    await axis_driver(dut, RNG, NUM_SEQ, sb)
+    await Timer(200, units="ns")
+    passed = sb.check()
+    await _dump_functional_cov(dut, cp_registry, Path(__file__).parent / "functional_cov.json")
+    assert passed, f"scoreboard failures: {sb.failures[:10]}"
+'''
     if proto.name == "sram":
         return '''
 @cocotb.test()
 async def run_main(dut):
     await setup_clock_reset(dut)
-    log_q: list = []
-    cocotb.start_soon(sram_monitor(dut, log_q,
-                                     coverpoint_sampler=lambda s, t: _sample_sram_bins(dut, cp_registry)))
-    sb = SramScoreboard(log_q)
+    sb = SramScoreboard()
     await sram_driver(dut, RNG, NUM_SEQ)
     await Timer(200, units="ns")
     passed = sb.check()
     await _dump_functional_cov(dut, cp_registry, Path(__file__).parent / "functional_cov.json")
     assert passed, f"scoreboard failures: {sb.failures[:10]}"
+'''
+    if proto.name == "generic":
+        return '''
+@cocotb.test()
+async def run_main(dut):
+    await setup_clock_reset(dut)
+    sample_q: list = []
+    cocotb.start_soon(generic_monitor(dut, sample_q))
+    await generic_driver(dut, RNG, NUM_SEQ)
+    await Timer(200, units="ns")
+    # Best-effort functional bin sampling (decoder bins for a* DUTs, run-tick otherwise).
+    for _ in range(64):
+        try:
+            _sample_generic_bins(dut, cp_registry)
+        except Exception:
+            pass
+        await RisingEdge(dut.clk) if hasattr(dut, "clk") else Timer(10, units="ns")
+    await _dump_functional_cov(dut, cp_registry, Path(__file__).parent / "functional_cov.json")
+    passed = (len(sample_q) > 0)
+    assert passed, "generic driver captured no samples"
 '''
     return '''
 @cocotb.test()
@@ -202,25 +231,27 @@ def proto_seed(design: Design) -> int:
 # ------------------------------------------------------------------------
 # Makefile
 # ------------------------------------------------------------------------
-def _makefile(design: Design) -> str:
-    # Compilable RTL sources only — headers (.vh/.svh) are pulled in via
-    # `+incdir+` at compile time, not listed as standalone sources. Use
-    # compile_order (topologically sorted by `include relations) when present
-    # so multi-file designs build in dependency order (spec §54).
+def _makefile(design: Design, rel_rtl: list[str] | None = None) -> str:
+    # RTL sources: copied into generated/rtl/ by render() (self-contained).
+    # Prefix with $(PWD) (the tb dir, absolute) so the path resolves correctly
+    # even though cocotb's VCS/verilator Makefile does `cd sim_build` before
+    # invoking the compiler — a bare `../rtl/x.v` would be wrong from sim_build/.
     src_exts = (".v", ".sv")
-    sources = [f for f in (design.compile_order or design.rtl_files)
-               if f.lower().endswith(src_exts)]
+    if rel_rtl:
+        # rel_rtl entries are like "../rtl/case1.v" (relative to tb dir);
+        # make them absolute via $(PWD).
+        sources = [f"$(PWD)/{s}" for s in rel_rtl]
+    else:
+        sources = [f for f in (design.compile_order or design.rtl_files)
+                   if f.lower().endswith(src_exts)]
     if not sources:
-        sources = ["dut.v"]
-    # The prebuilt wrapper is appended last; render() rewrites the
-    # $(PWD)/dut_inst.v token to an absolute path after generation.
+        sources = ["$(PWD)/../rtl/dut.v"]
+    # dut_inst.v lives next to this Makefile.
     verilog_sources = " \\\n  ".join([*sources, "$(PWD)/dut_inst.v"])
 
-    # Include dirs → +incdir+ via COMPILE_ARGS. cocotb threads COMPILE_ARGS
-    # into both verilator (its Makefile folds COMPILE_ARGS into EXTRA_ARGS) and
-    # iverilog, so a single knob covers both simulators.
-    incdir_args = " ".join(f"+incdir+{d}" for d in design.include_dirs)
-    compile_args_line = f"\nCOMPILE_ARGS += {incdir_args}" if incdir_args else ""
+    # Include dir → +incdir+ via COMPILE_ARGS. Absolute via $(PWD) too.
+    incdir_args = " +incdir+$(PWD)/../rtl"
+    compile_args_line = f"\nCOMPILE_ARGS += {incdir_args}"
 
     return f"""# Auto-generated Makefile for cocotb
 SIM ?= verilator
@@ -260,9 +291,30 @@ class RenderResult:
 
 
 def render(design: Design, constraints: dict, bins: dict, out_dir: Path) -> RenderResult:
-    """Render all testbench artifacts into out_dir/generated_tb/."""
-    tb_dir = Path(out_dir) / "generated_tb"
+    """Render all testbench artifacts into out_dir/generated/tb/.
+
+    RTL sources are copied into out_dir/generated/rtl/ so the generated/
+    directory is self-contained — the grader can run VCS/Verilator without
+    needing the original --rtl path (which is an absolute path on our machine
+    and won't exist on theirs). The Makefile references RTL by this relative
+    path.
+    """
+    gen_dir = Path(out_dir) / "generated"
+    tb_dir = gen_dir / "tb"
+    rtl_out_dir = gen_dir / "rtl"
     tb_dir.mkdir(parents=True, exist_ok=True)
+    rtl_out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy RTL sources into generated/rtl/ (self-contained delivery).
+    import shutil
+    rel_rtl: list[str] = []
+    for f in (design.compile_order or design.rtl_files):
+        src = Path(f)
+        if not src.exists() or not src.name.lower().endswith((".v", ".sv")):
+            continue
+        dst = rtl_out_dir / src.name
+        shutil.copy2(src, dst)
+        rel_rtl.append(f"../rtl/{src.name}")
 
     proto = protocol_output_for(design)
     cr_py = render_clock_reset(design)
@@ -275,8 +327,7 @@ def render(design: Design, constraints: dict, bins: dict, out_dir: Path) -> Rend
 
     (tb_dir / "dut_inst.v").write_text(_verilog_wrapper(design), encoding="utf-8")
 
-    mk_text = _makefile(design)
-    mk_text = mk_text.replace("$(PWD)/dut_inst.v", str((tb_dir / "dut_inst.v").resolve()))
+    mk_text = _makefile(design, rel_rtl or None)
     (tb_dir / "Makefile").write_text(mk_text, encoding="utf-8")
 
     # coverpoints file (currently embedded in tb_top; keep a placeholder for IDE)
@@ -287,6 +338,17 @@ def render(design: Design, constraints: dict, bins: dict, out_dir: Path) -> Rend
     )
 
     (tb_dir / "sim_run.log").write_text("", encoding="utf-8")
+
+    # Per-interface driver/monitor split. The skeleton MUST match what tb_top.py
+    # actually does: the driver `name` is the real cocotb function (proto.driver_name),
+    # `driver` is the concrete driver class, and drives/observes are the DUT input/
+    # output ports of each interface (grouped by classifier interface_name). This
+    # replaces the earlier "reporter re-infers drivers from ports" path, which
+    # invented names (e.g. "s_axis_driver") that don't exist in tb_top.py.
+    driver_class = _DRIVER_CLASS.get(proto.name, "cocotb driver")
+    monitor_class = _MONITOR_CLASS.get(proto.name, "cocotb monitor")
+    drivers = _skeleton_drivers(design, proto, driver_class)
+    monitors = _skeleton_monitors(design, proto, monitor_class)
 
     skeleton = {
         "schema_version": 1,
@@ -300,20 +362,8 @@ def render(design: Design, constraints: dict, bins: dict, out_dir: Path) -> Rend
             "reset_assert_cycles": design.reset[0].duration_cycles if design.reset else 0,
             "reset_deassert_after_cycles": 2,
         },
-        "drivers": [{
-            "name": proto.driver_name or (proto.name + "_driver"),  # explicit name from generator
-            "interface": proto.protocol_group or "generic",
-            "handles_ports": proto.ports_handled or [],
-            "handshake": proto.handshake,
-            "backpressure_strategy": proto.backpressure_strategy,
-        }] if proto.name != "none" else [],
-        "monitors": [{
-            "name": proto.monitor_name or (proto.name + "_monitor"),
-            "interface": proto.protocol_group or "generic",
-            "sampling_edge": "posedge " + (design.clock[0].name if design.clock else "clk"),
-            "samples": [{"port": p.name, "condition": "handshake"} for p in design.ports
-                        if p.role == "monitor"] or [{"port": "<all>", "condition": "every posedge"}],
-        }] if proto.name != "none" else [],
+        "drivers": drivers,
+        "monitors": monitors,
         "scoreboard": {
             "name": proto.scoreboard_name or (proto.name + "_refmodel"),
             "type": "transaction_level" if proto.name != "none" else "none",
@@ -332,6 +382,82 @@ def render(design: Design, constraints: dict, bins: dict, out_dir: Path) -> Rend
     }
 
     return RenderResult(tb_dir=tb_dir, skeleton=skeleton)
+
+
+# Concrete driver/monitor classes per protocol — what tb_top.py actually uses.
+_DRIVER_CLASS = {
+    "axi_lite": "cocotbext-axi AxiMaster/AxiRam (read/write/full per channel set)",
+    "axi_full": "cocotbext-axi AxiMaster/AxiRam (read/write/full per channel set)",
+    "axi_stream": "cocotbext-axi AxiStreamSource (slave input) / AxiStreamSink (master output)",
+    "sram": "cocotb pin-level driver (csb/we/addr/din/wmask)",
+    "generic": "cocotb pin-level generic driver (all inputs toggled)",
+    "none": "",
+}
+_MONITOR_CLASS = {
+    "axi_lite": "cocotbext-axi internal (AxiMaster/AxiRam observe outputs)",
+    "axi_full": "cocotbext-axi internal (AxiMaster/AxiRam observe outputs)",
+    "axi_stream": "cocotbext-axi AxiStreamSink",
+    "sram": "cocotb pin-level monitor (dout sampled on csb active)",
+    "generic": "cocotb pin-level generic monitor (all outputs sampled)",
+    "none": "",
+}
+
+
+def _skeleton_drivers(design: Design, proto: ProtocolOutput, driver_class: str) -> list[dict]:
+    """One driver entry per interface this protocol drives; name = real tb_top func."""
+    if proto.name == "none" or not proto.driver_name:
+        return []
+    # Group the ports this generator handles by interface_name.
+    handled = set(proto.ports_handled or [])
+    by_iface: dict[str, dict[str, list[str]]] = {}
+    for p in design.ports:
+        if p.name not in handled:
+            continue
+        iface = p.interface_name or "generic"
+        g = by_iface.setdefault(iface, {"drives": [], "observes": []})
+        if p.direction == "input":
+            g["drives"].append(p.name)
+        else:
+            g["observes"].append(p.name)
+    if not by_iface:
+        by_iface["generic"] = {"drives": [], "observes": list(handled)}
+    return [{
+        "name": proto.driver_name,
+        "interface": iface,
+        "driver": driver_class,
+        "drives": g["drives"],
+        "observes": g["observes"],
+        "traffic": "",
+    } for iface, g in by_iface.items()]
+
+
+def _skeleton_monitors(design: Design, proto: ProtocolOutput, monitor_class: str) -> list[dict]:
+    """One monitor entry per interface whose DUT outputs this protocol observes."""
+    if proto.name == "none" or not proto.monitor_name:
+        # Protocols that self-monitor (cocotbext-axi) report a single summary monitor.
+        if proto.name in ("axi_lite", "axi_full", "axi_stream"):
+            obs = [p.name for p in design.ports if p.direction in ("output", "inout")
+                   and p.name in (proto.ports_handled or [])]
+            return [{"name": proto.monitor_name or (proto.name + "_monitor"),
+                     "interface": proto.protocol_group or "generic",
+                     "monitor": monitor_class,
+                     "observes": obs or ["<internal>"],
+                     "checks": ""}] if obs else []
+        return []
+    handled = set(proto.ports_handled or [])
+    groups: dict[str, list[str]] = {}
+    for p in design.ports:
+        if p.name not in handled or p.direction not in ("output", "inout"):
+            continue
+        iface = p.interface_name or "generic"
+        groups.setdefault(iface, []).append(p.name)
+    return [{
+        "name": proto.monitor_name,
+        "interface": iface,
+        "monitor": monitor_class,
+        "observes": names,
+        "checks": "",
+    } for iface, names in groups.items()]
 
 
 def json_summary(bins: dict) -> str:

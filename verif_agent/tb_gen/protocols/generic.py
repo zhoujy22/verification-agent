@@ -88,14 +88,52 @@ class GenericScoreboard:
         return True
 '''
 
-    # No protocol-specific coverpoints in generic mode — relies entirely on
-    # line/branch coverage from random toggling.
+    # Generic mode has no protocol-specific bins of its own, BUT a unified-
+    # address AXI decoder (case5) falls to the generic driver and gets decoder
+    # bins from coverage_definer._addr_decoder_bins. Sample those from the DUT's
+    # real output signals so the generic driver still yields functional coverage.
     coverpoint_py = '''
 def _sample_generic_bins(dut, cp_registry):
-    """Generic protocol has no functional bins. Touch cp_registry to log that
-    the sampler ran at least once so we know coverage simulation traversed."""
+    """Generic sampler. Always ticks the run bin; additionally, if this DUT is
+    a unified-address (a*) decoder, sample its handshake / decode / completion
+    bins from real output signals (matched by suffix, prefix-agnostic)."""
     if "cp_generic_run" in cp_registry:
         cp_registry["cp_generic_run"]["BIN_TICK"].hit += 1
+
+    def _gv(suffix):
+        # find any port ending with _<suffix> and read its value
+        for name in dir(dut):
+            if name.endswith("_" + suffix):
+                try:
+                    return int(getattr(dut, name).value)
+                except Exception:
+                    return None
+        return None
+
+    # Address-decoder bins (only present for a* decoders; no-op otherwise).
+    av = _gv("avalid")
+    ar = _gv("aready")
+    if av is not None and "cp_addr_handshake" in cp_registry:
+        cp = cp_registry["cp_addr_handshake"]
+        if av == 1:
+            if "BIN_A_VALID" in cp: cp["BIN_A_VALID"].hit += 1
+            if ar == 1 and "BIN_A_ACCEPT" in cp: cp["BIN_A_ACCEPT"].hit += 1
+            elif ar == 0 and "BIN_A_STALL" in cp: cp["BIN_A_STALL"].hit += 1
+    mv = _gv("m_axi_avalid")
+    decerr = _gv("wc_decerr")
+    if (mv is not None or decerr is not None) and "cp_decode_select" in cp_registry:
+        cp = cp_registry["cp_decode_select"]
+        if mv == 1 and "BIN_M_AVALID" in cp: cp["BIN_M_AVALID"].hit += 1
+        if decerr == 1 and "BIN_DECERR" in cp: cp["BIN_DECERR"].hit += 1
+        if mv == 1 and "BIN_M_SELECT" in cp: cp["BIN_M_SELECT"].hit += 1
+    wcv = _gv("wc_valid"); wcr = _gv("wc_ready")
+    rcv = _gv("rc_valid"); rcr = _gv("rc_ready")
+    cplv = _gv("cpl_valid")
+    if "cp_completion" in cp_registry:
+        cp = cp_registry["cp_completion"]
+        if wcv == 1 and wcr == 1 and "BIN_WC" in cp: cp["BIN_WC"].hit += 1
+        if rcv == 1 and rcr == 1 and "BIN_RC" in cp: cp["BIN_RC"].hit += 1
+        if cplv == 1 and "BIN_CPL" in cp: cp["BIN_CPL"].hit += 1
 '''
 
     ports_handled = [n for n, _, _ in inputs] + list(outputs)

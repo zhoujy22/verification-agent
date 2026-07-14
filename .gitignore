@@ -10,6 +10,7 @@ pip-wheel-metadata/
 
 # ---- Test / coverage caches ----
 _debug_*
+_dbg*
 .pytest_cache/
 .coverage
 .coverage.*

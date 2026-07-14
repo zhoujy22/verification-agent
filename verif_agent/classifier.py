@@ -68,9 +68,11 @@ _APB_OPTIONAL = {"pslverr", "pstrb", "pprot", "pclk"}
 _APB_ALL = _APB_CORE | _APB_DATA | _APB_OPTIONAL
 _APB_SIGNAL_MAP = {"apb": _APB_ALL}
 
-# SRAM
+# SRAM — reverse-match tolerant of any prefix (e.g. sram_csb, mem_addr).
 _SRAM_CHIP_EN = {"csb", "cs_n", "cen", "cs"}
 _SRAM_DATA_PORTS = {"we", "we_n", "web", "addr", "din", "dout", "wmask", "be"}
+_SRAM_ALL = _SRAM_CHIP_EN | _SRAM_DATA_PORTS
+_SRAM_SIGNAL_MAP = {"sram": _SRAM_ALL}
 
 # Clock / Reset
 _CLOCK_NAMES = {"clk", "clk_i", "hclk", "pclk", "aclk", "mclk", "sclk", "clock"}
@@ -285,6 +287,13 @@ def _classify_axi(port_names: set[str]) -> tuple[bool, str]:
     if not (write_ok or read_ok or addr_ok):
         return False, "unknown"
 
+    # A unified address-only (a*) crossbar/decoder has NO data channels (no
+    # ar/aw/w/r/b). cocotbext-axi's AxiMaster/AxiRam are memory models and
+    # crash on it (no wdata/rdata). Treat pure-a* as non-AXI so it falls to
+    # the generic driver, which toggles the a* inputs and observes decoding.
+    if addr_ok and not (write_ok or read_ok):
+        return False, "unknown"
+
     bare: set[str] = set()
     for n in port_names:
         _, sig, _ = _reverse_match(n, _AXI_SIGNAL_MAP)
@@ -307,8 +316,20 @@ def _classify_apb(port_names: set[str]) -> bool:
 
 
 def _classify_sram(port_names: set[str]) -> bool:
-    has_ce = any(ce in port_names for ce in _SRAM_CHIP_EN)
-    data_count = sum(1 for s in _SRAM_DATA_PORTS if s in port_names)
+    """Prefix-tolerant SRAM detection via reverse-match.
+
+    Recognises a SRAM if a chip-enable signal AND >= 3 data/control signals
+    (we/addr/din/dout/wmask/...) are present, regardless of prefix — so
+    ``sram_csb``/``sram_addr``/``mem_din`` etc. are detected, not just bare
+    ``csb``/``addr``.
+    """
+    bare: set[str] = set()
+    for n in port_names:
+        _, sig, _ = _reverse_match(n, _SRAM_SIGNAL_MAP)
+        if sig:
+            bare.add(sig)
+    has_ce = any(ce in bare for ce in _SRAM_CHIP_EN)
+    data_count = sum(1 for s in _SRAM_DATA_PORTS if s in bare)
     return has_ce and data_count >= 3
 
 
@@ -441,6 +462,13 @@ def classify(design: Design) -> Design:
                 p.protocol_group = chan
                 p.role = role
                 continue
+        elif _reverse_match(p.name, {"axi_a": _AXI_A_SIGNALS})[1] is not None:
+            # Pure-a* decoder (not classified as AXI because it has no data
+            # channels) still tags its ports axi_a so the addr-decoder bin path
+            # and generic sampler can recognize them.
+            p.protocol_group = "axi_a"
+            p.role = "driver" if p.direction == "input" else "monitor"
+            continue
 
         # APB (reverse-match)
         if is_apb:
@@ -450,11 +478,13 @@ def classify(design: Design) -> Design:
                 p.role = _apb_signal_role(sig, p.direction)
                 continue
 
-        # SRAM
-        if is_sram and ln in (_SRAM_CHIP_EN | _SRAM_DATA_PORTS):
-            p.protocol_group = "sram"
-            p.role = _sram_signal_direction(p.name)
-            continue
+        # SRAM (reverse-match — prefix-tolerant)
+        if is_sram:
+            _, sig, _ = _reverse_match(p.name, _SRAM_SIGNAL_MAP)
+            if sig:
+                p.protocol_group = "sram"
+                p.role = _sram_signal_direction(sig)
+                continue
 
         # valid/ready stream
         if is_stream and (ln in stream_in_names or ln in stream_out_names):
@@ -560,6 +590,9 @@ def _assign_interface_names(design: Design) -> None:
         elif p.protocol_group == "apb":
             prefix, _, _ = _reverse_match(p.name, _APB_SIGNAL_MAP)
             axi_ports_prefix[id(p)] = prefix if prefix else "apb"
+        elif p.protocol_group == "sram":
+            prefix, _, _ = _reverse_match(p.name, _SRAM_SIGNAL_MAP)
+            axi_ports_prefix[id(p)] = prefix if prefix else "sram"
 
     # Second pass: assign
     for p in design.ports:
@@ -572,7 +605,7 @@ def _assign_interface_names(design: Design) -> None:
         elif p.protocol_group == "apb":
             p.interface_name = axi_ports_prefix.get(id(p), "apb")
         elif p.protocol_group == "sram":
-            p.interface_name = "sram"
+            p.interface_name = axi_ports_prefix.get(id(p), "sram")
         elif p.protocol_group == "stream_in" or p.protocol_group == "stream_out":
             # Derive stem from port name: in_valid → "in", output_ctrl_ready → "output_ctrl"
             ln = p.name.lower()

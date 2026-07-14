@@ -1,121 +1,91 @@
-# verif_agent — RTL 验证环境自动生成 Agent
+# verif_agent — RTL 验证环境自动生成
 
-赛事 A2（"面向 RTL 的 Agent 自动验证环境生成"）的参赛实现。
+给定 RTL（Verilog），自动生成 cocotb testbench 并输出 7 个 JSON 报告。支持 AXI / AXI-Lite / AXI-Stream / SRAM / valid-ready stream 接口。
 
-给定 RTL（Verilog），自动解析接口 → 推断协议 → 生成 cocotb testbench → 仿真 → 收集 3 类覆盖率 → 按 spec 规定的 7 个 JSON 输出报告。
+---
 
-## 文件清单
+## 一、快速开始
 
-```
-verif_agent/                 # 主包（CLI、pipeline、parser、生成器等）
-├── __main__.py              # python -m verif_agent
-├── cli.py                   # argparse CLI
-├── pipeline.py              # 总装
-├── design.py                # Port / Clock / Reset / Design 数据类
-├── classifier.py            # 协议识别
-├── constraints_gen.py       # constraints.json 生成
-├── coverage_definer.py      # coverage_bins.json 生成（bin 必有 sampling_condition）
-├── feedback.py              # 覆盖率反馈迭代（max 2）
-├── reporter.py              # 7 个 JSON 输出
-├── rtl_parser/              # preprocess / regex / pyverilog / port_resolver
-├── tb_gen/                  # 时钟复位 + 渲染 + 4 个协议生成器
-├── sim/                     # Verilator / Icarus runner + 自动 fallback
-├── coverage/                # line_branch / functional / aggregator
-└── schemas/                 # JSON Schema 自检（spec 7 条硬约束）
+### 方式 A：pip 安装（Linux）
 
-tests/
-├── test_parser.py
-├── test_classifier.py
-├── test_constraints_and_bins.py
-├── test_protocols.py
-├── test_schemas.py
-├── test_case1_smoke.py
-├── test_reproducibility.py
-├── test_fallback.py
-└── test_bin_validity.py
+```bash
+pip install -r requirements.txt
 
-public_dataset/case1/        # 最小流式 DUT 样例
-├── rtl/stream_dut.v
-└── README.md
-
-run.sh                       # 薄壳，转发到 python3 run.py
-run.py                       # 直接 python 入口
-Dockerfile                   # python:3.11.9-slim-bookworm
-requirements.txt             # 锁版本依赖
+./run.sh --rtl <RTL目录> --top <顶层模块名> --out <输出目录> --seed 12345 --num-seq 5000
 ```
 
-## 用法
+示例：
 
-### Docker 内（推荐评测环境）
+```bash
+./run.sh --rtl public/A2-verification/testcases/A2_public_dataset/case1/rtl \
+         --top axi_adapter_rd --out out/case1 --seed 12345 --num-seq 5000
+```
+
+需要 Python 3.11+，以及 `verilator` 或 `iverilog`（agent 自检仿真用，可选）。
+
+### 方式 B：Docker（Linux）
 
 ```bash
 docker build -t verif-agent:0.1.0 .
-docker run --rm -it --entrypoint /bin/bash -v "D:\111\tb_enviroment:/work" verif-agent:0.1.0
+
 MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/work" verif-agent:0.1.0 \
-  --rtl benchmark/rtl --top dut --out submission_out/case_name \
-  --seed 12345 --num-seq 5000
+  --rtl <RTL目录> --top <顶层模块名> --out <输出目录> --seed 12345 --num-seq 5000
 ```
 
-### 本地
+---
 
-```bash
-pip install -r requirements.txt
-./run.sh --rtl public_dataset/case1/rtl --top stream_dut \
-         --out /tmp/case1 --seed 1 --num-seq 5000
-# 或：
-python3 run.py --rtl public_dataset/case1/rtl --top stream_dut \
-               --out /tmp/case1 --seed 1 --num-seq 5000
-```
-
-## 产物布局（每个 case 写到 `--out`）
+## 二、产出物
 
 ```
 <out>/
-├── design.json                    # 接口解析结果（top, rtl_files, ports, clock/reset, protocols）
-├── verification_skeleton.json     # 验证骨架（drivers / monitors / scoreboard / tb source）
-├── constraints.json               # 约束随机测试策略（seed, num_seq, random_vars, feedback updates）
-├── coverage_bins.json             # 功能覆盖率目标（coverpoints/bins，bin 必有 sampling_condition）
-├── functional_coverage.json       # 采样结果（covered_bins, valid_bins, per-coverpoint）
-├── coverage_result.json           # line / branch / functional / combined_C
-├── report.json                    # 顶层汇总（4 stage 标志 + reproducible_command + environment）
-├── generated_tb/                  # tb_top.py / dut_inst.v / Makefile / coverpoints.py / sim_run.log
-└── generated_tests/               # reserved
+├── design.json                    # 接口解析（端口、时钟复位、接口分组）
+├── verification_skeleton.json     # 验证骨架（driver/monitor/scoreboard，与 tb 一致）
+├── constraints.json               # 约束随机测试策略
+├── coverage_bins.json             # 功能覆盖率 bin 定义
+├── functional_coverage.json       # 功能 bin 采样结果
+├── coverage_result.json           # 行/分支/功能/综合覆盖率（agent 自检值）
+├── report.json                    # 阶段汇总 + 可复现命令
+└── generated/                     # 交付用 testbench（自包含）
+    ├── rtl/                        #   RTL 源文件副本
+    └── tb/                         #   cocotb testbench
+        ├── tb_top.py               #     测试主程序
+        ├── dut_inst.v              #     DUT 例化 wrapper
+        ├── Makefile                #     cocotb 仿真 Makefile
+        └── coverpoints.py
 ```
 
-## 评分映射（spec §65-）
+`generated/` 自包含（RTL 已复制进去，路径全相对），拷走即用，不依赖原 RTL 位置。
 
-- **骨架分 3 分（门禁项）** — 由 verification_skeleton.json 体现。drivers/monitors/scoreboard 必须非空且非壳。
-- **覆盖率分 7 分** — C = 0.4·line + 0.3·branch + 0.3·functional，按阈值：
-  - C ≥ 85% → 7.0
-  - 65–85% → 4.9
-  - 45–65% → 2.8
-  - < 45% → 0
-- 每电路 10 分 × 10 = 100 分。
+---
 
-## 关键技术决策
+## 三、VCS 评测
 
-- **仿真器**：默认 Verilator（cocotb Makefile，`SIM=verilator`），Verilator 拒绝的 RTL 自动切到 Icarus Verilog（`SIM=icarus`）。verilator 专用 flag（`--coverage --build -Wno-fatal`）在生成 Makefile 里用 `ifeq ($(SIM),verilator)` 包起来，不会漏给 iverilog 导致 `invalid option`。
-- **Testbench**：cocotb + cocotb-coverage（驱动/监视/记分板 + 功能 bin 命中采样）。
-- **RTL 解析**：PyVerilog 主路径（惰性导入）+ 正则兜底（保证 ports 列表在 PyVerilog 失败或未安装时仍非空）。
-- **唯一 RNG 实例**：`random.Random(int(args.seed))`，保证同 seed 输出字节相同。
-
-## 测试
+### 1. 装依赖（赛方机器首次需要一次）
 
 ```bash
-pip install -r requirements.txt
-python -m pytest tests/test_parser.py -q
-python -m pytest tests/test_classifier.py -q
-python -m pytest tests/test_constraints_and_bins.py -q
-python -m pytest tests/test_protocols.py -q
-python -m pytest tests/test_schemas.py -q
-python -m pytest tests/test_case1_smoke.py -q   # 需要 verilator/iverilog
-python -m pytest tests/test_reproducibility.py -q
-python -m pytest tests/test_fallback.py -q
-python -m pytest tests/test_bin_validity.py -q
+pip install cocotb==1.9.0 cocotbext-axi==0.1.28 cocotb-coverage==1.1.0
 ```
 
-## TODO（拿到赛方 `public_dataset/case1..case5` 后）
+需要 Python 3.8+（推荐 3.11）。若 cocotb-config 不在 PATH：`export PATH="$HOME/.local/bin:$PATH"`。
 
-- 新增 `verif_agent/field_mapping.py` 适配层（当前尚未创建）
-- 用官方 `expected/*.json` 作为对齐基准，重命名 key（如 `top` → `top_module`）
-- lock 版本签名跑通 → `diff` 通过
+### 2. 用 VCS 跑 testbench
+
+```bash
+cd <out>/generated/tb
+
+make SIM=vcs \
+     MODULE=tb_top TESTCASE=run_main \
+     COMPILE_ARGS="-cm line+branch -cm_dir sim_build/coverage.vdb" \
+     SIM_ARGS="-cm_dir sim_build/coverage.vdb" \
+     SEED=12345 NUM_SEQ=5000
+```
+
+### 3. 采集覆盖率
+
+```bash
+urg -dir sim_build/coverage.vdb -report sim_build/urg_report
+```
+
+覆盖率以 VCS/URG 采集为准（`coverage_result.json` 里的数字是 agent 在 Verilator 下的自检值，仅供参考）。功能覆盖率由 testbench 自身采样，见 `functional_coverage.json`。
+
+综合覆盖率：`C = 0.4×行 + 0.3×分支 + 0.3×功能`。

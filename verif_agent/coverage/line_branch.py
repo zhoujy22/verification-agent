@@ -67,6 +67,59 @@ def parse_icarus_dat(dat_path) -> tuple[int, int, int, int]:
     return hits, max(total, 1), 0, 0
 
 
+def parse_verilator_dat(dat_path) -> tuple[int, int, int, int]:
+    """Parse Verilator's native coverage.dat directly.
+
+    Verilator 5.x emits a text database where each line is::
+
+        C 'f<file>l<line>n<col>page v_line/<mod>o<kind>S<lines>h<inst>' <count>
+        C '...                          v_branch/<mod>o<if|else>S<lines>...' <count>
+
+    Each ``v_line`` record is one executable line; each ``v_branch`` record is
+    one branch arm (an if-arm or else-arm of a conditional). count>0 means the
+    line/arm was exercised. This is Verilator's REAL branch data — ``verilator_
+    coverage --write-info`` drops it (emits only lcov DA: records), so parsing
+    the .dat directly is the only way to get a non-zero branch figure under
+    Verilator.
+
+    The auto-generated wrapper (dut_inst.v) and tb_top are excluded — only real
+    RTL source files carry meaningful DUT coverage.
+
+    Returns (line_hits, line_total, branch_hits, branch_total).
+    """
+    p = Path(dat_path)
+    if not p.exists() or p.stat().st_size == 0:
+        return 0, 0, 0, 0
+    text = p.read_text(encoding="utf-8", errors="ignore")
+
+    # One C '...' count line per record. Fields are separated by control chars:
+    #   C '\x01f\x02<path>\x01l\x02<line>\x01n\x02<col>\x01page\x02v_line/<mod>\x01o\x02<kind>\x01S\x02<lines>\x01h\x02<inst>' <count>
+    # Capture file path, kind (v_line/v_branch), line number, and trailing count.
+    rec = re.compile(
+        r"\x01f\x02(.*?)\x01l\x02(\d+)\x01n\x02\d+\x01page\x02(v_line|v_branch)/[^']*?'\s+(\d+)",
+    )
+    line_hits = line_total = branch_hits = branch_total = 0
+    for m in rec.finditer(text):
+        path, line_no, kind, count_str = m.group(1), m.group(2), m.group(3), m.group(4)
+        base = Path(path).name.lower()
+        # Skip the generated wrapper / testbench artifacts — they are not DUT logic.
+        if base in ("dut_inst.v", "tb_top.v", "tb_top.py"):
+            continue
+        try:
+            count = int(count_str)
+        except ValueError:
+            count = 0
+        if kind == "v_line":
+            line_total += 1
+            if count > 0:
+                line_hits += 1
+        elif kind == "v_branch":
+            branch_total += 1
+            if count > 0:
+                branch_hits += 1
+    return line_hits, max(line_total, 1), branch_hits, max(branch_total, 1)
+
+
 def parse_verilator_info(info_path) -> tuple[int, int, int, int]:
     """Parse a Verilator-generated lcov ``.info`` file.
 

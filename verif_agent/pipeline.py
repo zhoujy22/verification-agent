@@ -22,6 +22,7 @@ from .coverage import (
     compute_combined,
     parse_cocotb_json,
     parse_icarus_dat,
+    parse_verilator_dat,
     parse_verilator_info,
     parse_verilator_xml,
     reconcile_with_bins,
@@ -51,7 +52,7 @@ def run(rtl_dir: str, top: str, out_dir: str, seed: int, num_seq: int = 5000,
     """Run the full pipeline. Writes all 7 JSON files to out_dir."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "generated_tests").mkdir(exist_ok=True)
+    (out / "generated" / "tests").mkdir(parents=True, exist_ok=True)
     case_name = _infer_case_name(rtl_dir)
 
     stages = {"parse": "pending", "skeleton_gen": "pending", "simulate": "pending", "coverage_collect": "pending"}
@@ -177,9 +178,16 @@ def run(rtl_dir: str, top: str, out_dir: str, seed: int, num_seq: int = 5000,
 
 
 def _read_line_branch(sim_result, tool):
-    # Prefer the lcov .info produced by `verilator_coverage --write-info` —
-    # it carries real line + branch counts. Fall back to coverage.xml (older
-    # verilator), then the binary .dat (icarus).
+    # Prefer parsing Verilator's native coverage.dat directly — it carries BOTH
+    # line (v_line) and REAL branch (v_branch) records. The lcov .info produced
+    # by `verilator_coverage --write-info` drops branch records (emits only DA:),
+    # so parsing the .dat is the only way to get a non-zero branch figure under
+    # Verilator. Fall back to .info (line only) / .xml / icarus .dat.
+    if sim_result.coverage_dat and Path(sim_result.coverage_dat).exists():
+        lh, lt, bh, bt = parse_verilator_dat(sim_result.coverage_dat)
+        if bt > 0:
+            return lh, lt, bh, bt
+        # .dat had no branch records (maybe non-verilator) — fall through.
     if sim_result.coverage_info and Path(sim_result.coverage_info).exists():
         return parse_verilator_info(sim_result.coverage_info)
     if sim_result.coverage_xml and Path(sim_result.coverage_xml).exists():
