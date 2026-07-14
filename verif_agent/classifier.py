@@ -27,14 +27,14 @@ _AXI_AW_SIGNALS = {
     "awsize", "awburst", "awlen", "awid",
     "awlock", "awcache", "awqos", "awregion", "awuser",
 }
-_AXI_W_SIGNALS = {"wvalid", "wready", "wdata", "wstrb", "wlast", "wid"}
+_AXI_W_SIGNALS = {"wvalid", "wready", "wdata", "wstrb", "wlast", "wid", "wuser"}
 _AXI_B_SIGNALS = {"bvalid", "bready", "bresp", "bid"}
 _AXI_AR_SIGNALS = {
     "arvalid", "arready", "araddr", "arprot",
     "arsize", "arburst", "arlen", "arid",
     "arlock", "arcache", "arqos", "arregion", "aruser",
 }
-_AXI_R_SIGNALS = {"rvalid", "rready", "rdata", "rresp", "rlast", "rid"}
+_AXI_R_SIGNALS = {"rvalid", "rready", "rdata", "rresp", "rlast", "rid", "ruser"}
 # Unified address channel (AXI address-only crossbar etc.): a* not split into ar/aw
 _AXI_A_SIGNALS = {"avalid", "aready", "aaddr", "aprot", "aqos", "aid",
                   "aregion", "alock", "acache", "auser"}
@@ -137,9 +137,9 @@ def _looks_like_reset(name: str) -> bool:
 
 
 def _is_clock_port(p: Port) -> bool:
-    ln = p.name.lower()
-    if p.width != 1:
+    if p.direction != "input" or p.width != 1:
         return False
+    ln = p.name.lower()
     # Exact match against known names
     if ln in _CLOCK_NAMES:
         return True
@@ -150,7 +150,7 @@ def _is_clock_port(p: Port) -> bool:
 
 
 def _is_reset_port(p: Port) -> bool:
-    if p.width != 1:
+    if p.direction != "input" or p.width != 1:
         return False
     return _looks_like_reset(p.name)
 

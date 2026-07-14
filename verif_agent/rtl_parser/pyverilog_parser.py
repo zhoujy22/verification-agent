@@ -36,20 +36,35 @@ class PyVerilogInfo:
 
 # --- module-header extraction ----------------------------------------------
 
-def _extract_headers(text: str) -> str:
-    """Return ``module ... ;`` headers only, body stripped, one per module.
+# non-ANSI port declaration in the body: `input wire [W-1:0] foo, bar;`
+# Captures the whole statement up to the first `;` so width/sign/type come along.
+_BODY_PORT_DECL_RE = re.compile(
+    r"\b(?P<dir>input|output|inout)\b"
+    r"(?:\s+(?P<sign>signed|unsigned))?"
+    r"(?:\s+(?P<type>wire|reg|logic))?"
+    r"[^;]*?;",
+    re.DOTALL,
+)
 
-    Tracks parenthesis depth from each ``module`` keyword and cuts at the first
-    depth-0 ``;`` (the header terminator). Comments are stripped first so the
-    ``/* AXI slave interface */`` blocks common in port lists don't skew depth.
+
+def _extract_headers(text: str) -> str:
+    """Return module headers + non-ANSI body port declarations, body otherwise stripped.
+
+    For ANSI modules the header alone carries direction/width/sign. For
+    non-ANSI modules the header lists only bare names; the direction/width live
+    in body lines like ``input wire [7:0] data;``. We extract those body lines
+    too (they are syntactically simple and don't trigger PyVerilog's body-level
+    ParseError), so non-ANSI designs keep their port types.
     """
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
     text = re.sub(r"//[^\n]*", "", text)
     text = re.sub(r"\\\s*\n", " ", text)
 
-    headers: list[str] = []
+    out_parts: list[str] = []
     for m in re.finditer(r"\bmodule\b\s+(\w+)", text):
         start, depth, k, n = m.start(), 0, m.start(), len(text)
+        header_end = None
+        # Phase 1: find header terminator (first depth-0 `;`)
         while k < n:
             c = text[k]
             if c == "(":
@@ -57,10 +72,27 @@ def _extract_headers(text: str) -> str:
             elif c == ")":
                 depth -= 1
             elif c == ";" and depth == 0:
-                headers.append(text[start:k + 1])
+                header_end = k + 1
                 break
             k += 1
-    return "\n".join(h + "\nendmodule\n" for h in headers)
+        if header_end is None:
+            continue
+        header = text[start:header_end]
+
+        # Phase 2: scan body until endmodule, collect port declarations
+        body_start = header_end
+        endmod = text.find("endmodule", body_start)
+        body_end = endmod if endmod != -1 else n
+        body = text[body_start:body_end]
+        body_decl_lines = [m2.group(0).strip()
+                           for m2 in _BODY_PORT_DECL_RE.finditer(body)]
+
+        part = header
+        if body_decl_lines:
+            part += "\n" + "\n".join(body_decl_lines)
+        out_parts.append(part + "\nendmodule\n")
+
+    return "\n".join(out_parts)
 
 
 # --- expression evaluation -------------------------------------------------
@@ -140,11 +172,45 @@ def _params_of(module_def) -> dict[str, int]:
     return params
 
 
+def _body_port_decls(module_def) -> dict[str, tuple[str, int, str]]:
+    """Collect non-ANSI port declarations from the module body.
+
+    For non-ANSI modules the header lists only bare names; direction/width/sign
+    live in body Decl nodes (Input/Output/Inout). This returns a map
+    name → (direction, width, sign) for those, so _ports_of can backfill
+    header ports that have no type info.
+
+    Only top-level Decl children of the ModuleDef are scanned (these are the
+    module's own port declarations); nested function/task bodies are skipped.
+    """
+    decls: dict[str, tuple[str, int, str]] = {}
+    for child in (module_def.children() if hasattr(module_def, "children") else []):
+        if type(child).__name__ != "Decl":
+            continue
+        for item in (child.children() if hasattr(child, "children") else [child]):
+            cn = type(item).__name__.lower()
+            if cn not in ("input", "output", "inout"):
+                continue
+            nm = str(getattr(item, "name", "") or "")
+            if not nm:
+                continue
+            # a Decl can declare multiple names sharing one type, but pyverilog
+            # splits them into separate Input/Output nodes, so name is scalar here
+            w = getattr(item, "width", None)
+            width = 1
+            if w is not None and getattr(w, "msb", None) is not None:
+                width = max(_eval(w.msb, {}) - _eval(w.lsb, {}) + 1, 1)
+            sign = "signed" if getattr(item, "signed", False) else "unsigned"
+            decls[nm] = (cn, width, sign)
+    return decls
+
+
 def _ports_of(module_def, params: dict[str, int]) -> list[dict]:
     out: list[dict] = []
     pl = getattr(module_def, "portlist", None)
     if not pl or not hasattr(pl, "ports"):
         return out
+    body_decls = _body_port_decls(module_def)
     for port in pl.ports:
         # ANSI ports: port is an Ioport whose .first is Input/Output/Inout.
         node = getattr(port, "first", None) or port
@@ -152,13 +218,23 @@ def _ports_of(module_def, params: dict[str, int]) -> list[dict]:
         if not name:
             continue
         direction = type(node).__name__.lower()
-        if direction not in ("input", "output", "inout"):
-            direction = "input"
         w = getattr(node, "width", None)
         width = 1
-        if w is not None and getattr(w, "msb", None) is not None:
-            width = max(_eval(w.msb, params) - _eval(w.lsb, params) + 1, 1)
         sign = "signed" if getattr(node, "signed", False) else "unsigned"
+        if w is not None and getattr(w, "msb", None) is not None:
+            # ANSI: header carries full type
+            width = max(_eval(w.msb, params) - _eval(w.lsb, params) + 1, 1)
+        else:
+            # non-ANSI: header has bare name — backfill direction/width/sign
+            # from body Decl if present
+            bd = body_decls.get(name)
+            if bd:
+                if direction not in ("input", "output", "inout"):
+                    direction = bd[0]
+                width = bd[1]
+                sign = bd[2]
+        if direction not in ("input", "output", "inout"):
+            direction = "input"
         out.append({"name": name, "direction": direction, "width": width, "sign": sign})
     return out
 

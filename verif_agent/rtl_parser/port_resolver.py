@@ -200,26 +200,48 @@ def _merge_ports(
 
 
 def _infer_clock_reset(ports: list[Port]) -> tuple[list[Clock], list[Reset]]:
+    """Infer clock and reset ports.
+
+    Reuses the classifier's clock/reset detectors so suffix-named signals
+    (input_clk, output_clk, rst_req_out) are recognized here too — keeping
+    multi-clock-domain designs (e.g. case3) from collapsing to a single clk.
+    """
+    from ..classifier import _is_clock_port, _looks_like_reset
     clocks, resets = [], []
     for p in ports:
-        ln = p.name.lower()
-        if p.width == 1 and ln in {"clk", "hclk", "pclk", "aclk", "mclk", "sclk", "clock"}:
+        if p.direction != "input":
+            continue
+        if _is_clock_port(p):
             clocks.append(Clock(name=p.name, width=1, period_ns=10))
-        if p.width == 1 and (ln.startswith("rst") or ln.startswith("reset") or ln.startswith("arst") or ln.startswith("nrst")):
+        elif _looks_like_reset(p.name) and p.width == 1:
+            ln = p.name.lower()
             active = 0 if ln.endswith("_n") or ln.endswith("n") else 1
             resets.append(Reset(name=p.name, width=1, active_level=active, duration_cycles=5))
     return clocks, resets
 
 
-def resolve(rtl_dir: str | Path, top: str) -> Design:
-    """Parse an --rtl directory and produce a Design rooted at `top`."""
-    files = discover_rtl_files(rtl_dir)
-    if not files:
-        raise RuntimeError(f"No RTL files found under {rtl_dir}")
+def _slang_to_ports_params(info) -> tuple[list[Port], list[Parameter]]:
+    """Convert a SlangInfo into Port/Parameter lists."""
+    ports = [Port(
+        name=p["name"], direction=p.get("direction", "input"),
+        width=max(int(p.get("width", 1) or 1), 1),
+        sign=p.get("sign", "unsigned"),
+    ) for p in info.ports]
+    params = [Parameter(
+        name=pm["name"], value=int(pm.get("value", 0) or 0),
+        width=max(int(pm.get("width", 32) or 32), 1),
+        signed=bool(pm.get("signed", False)),
+    ) for pm in info.parameters]
+    return ports, params
 
-    include_dirs: list[str] = [str(Path(rtl_dir).resolve())]
-    order = _topological_sort(files)
 
+def _legacy_per_file_parse(order: list[str], top: str,
+                           include_dirs: list[str]) -> tuple[list[Port], list[Parameter]]:
+    """Fallback path: per-file pyverilog + regex merge.
+
+    Used when the pyslang primary path fails. pyverilog_parser / regex_parser
+    are unchanged — this is the original resolve() loop extracted verbatim.
+    """
     all_ports: list[Port] = []
     all_params: list[Parameter] = []
 
@@ -246,6 +268,43 @@ def resolve(rtl_dir: str | Path, top: str) -> Design:
         ports, params = _merge_ports(f, pyv_ports, rx_items, pyv_params)
         all_ports.extend(ports)
         all_params.extend(params)
+
+    return all_ports, all_params
+
+
+def resolve(rtl_dir: str | Path, top: str) -> Design:
+    """Parse an --rtl directory and produce a Design rooted at `top`.
+
+    Primary path: pyslang — loads every source file into one Compilation so
+    cross-file parameter references and top-level instance resolution work
+    natively. Falls back to the per-file pyverilog+regex path on any failure.
+    """
+    files = discover_rtl_files(rtl_dir)
+    if not files:
+        raise RuntimeError(f"No RTL files found under {rtl_dir}")
+
+    include_dirs: list[str] = [str(Path(rtl_dir).resolve())]
+    order = _topological_sort(files)
+
+    all_ports: list[Port] = []
+    all_params: list[Parameter] = []
+
+    # Primary path: pyslang (full SV semantics, one Compilation for all files)
+    try:
+        from .slang_parser import parse as slang_parse, SlangParseError
+        info = slang_parse(order, top)
+        all_ports, all_params = _slang_to_ports_params(info)
+        log.debug("parsed %s via pyslang: %d ports, %d params",
+                  top, len(all_ports), len(all_params))
+    except ImportError as exc:
+        log.debug("pyslang unavailable, using pyverilog+regex: %s", exc)
+        all_ports, all_params = _legacy_per_file_parse(order, top, include_dirs)
+    except SlangParseError as exc:
+        log.debug("pyslang failed (%s), falling back to pyverilog+regex", exc)
+        all_ports, all_params = _legacy_per_file_parse(order, top, include_dirs)
+    except Exception as exc:                              # noqa: BLE001
+        log.warning("pyslang unexpected error (%s), falling back to pyverilog+regex", exc)
+        all_ports, all_params = _legacy_per_file_parse(order, top, include_dirs)
 
     # Dedup ports by name (keep first occurrence — header-declared port wins).
     dedup_ports: dict[str, Port] = {}

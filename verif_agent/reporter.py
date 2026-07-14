@@ -225,10 +225,26 @@ def _to_design(inputs: ReporterInputs) -> dict:
             info["role"] = llm_role
     primary = d.get("primary_protocol") or ""
     function = desc.get("function") or (f"{primary} sub-system" if primary else "unrecognized RTL")
-    clk = clocks[0]["name"] if clocks else ""
-    rst = resets[0]["name"] if resets else ""
-    rst_active = "high" if (resets and resets[0].get("active_level", 1) == 1) else "low"
     rtl_first = d.get("rtl_files") or []
+
+   # Multi-clock: output "clocks"/"resets" arrays; single-clock keeps the
+    # simple string form from the public cases (e.g. case1 "clk" / "rst_n").
+    if len(clocks) == 1:
+        cblock: dict = {"clock": clocks[0]["name"]}
+    elif clocks:
+        cblock = {"clocks": [c["name"] for c in clocks]}
+    else:
+        cblock = {"clock": ""}  # fallback — shouldn't happen
+    if len(resets) == 1:
+        rblock: dict = {"reset": resets[0]["name"],
+                        "reset_active": "high" if resets[0].get("active_level", 1) == 1 else "low"}
+    elif resets:
+        rblock = {"resets": [{"signal": r["name"],
+                               "reset_active": "high" if r.get("active_level", 1) == 1 else "low"}
+                              for r in resets]}
+    else:
+        rblock = {"reset": "", "reset_active": "high"}
+
     return {"design": {
         "name": _case(inputs),
         "rtl": f"rtl/{Path(rtl_first[0]).name}" if rtl_first else "",
@@ -236,7 +252,7 @@ def _to_design(inputs: ReporterInputs) -> dict:
         "generated_cocotb_top": "generated_tb/dut_inst.v",
         "function": function,
         "configuration_under_test": {p.get("name"): p.get("value") for p in params},
-        "clock_reset": {"clock": clk, "reset": rst, "reset_active": rst_active},
+        "clock_reset": {**cblock, **rblock},
         "interfaces": interfaces,
         "related_testbench_note": desc.get("related_testbench_note") or {"user_named_path": "", "finding": ""},
         "vcs_compatibility_note": desc.get("vcs_compatibility_note") or {"finding": ""},
@@ -351,8 +367,6 @@ def _to_skeleton(inputs: ReporterInputs) -> dict:
     ports = d.get("ports") or []
     clocks = d.get("clock") or []
     resets = d.get("reset") or []
-    clk = clocks[0]["name"] if clocks else "clk"
-    rst = resets[0]["name"] if resets else "rst"
     cr = s.get("clock_reset") or {}
 
     # Prefer inferring drivers/monitors from port DIRECTION — this correctly
@@ -381,17 +395,45 @@ def _to_skeleton(inputs: ReporterInputs) -> dict:
             "checks": "",
         } for m in (s.get("monitors") or [])]
 
+    # Multi-clock/multi-reset support: case3 has clk + input_clk + output_clk,
+    # plus several reset-related signals (rst / input_rst / output_rst /
+    # rst_req_in / rst_req_out). All of them drive real time-domain behavior
+    # in the cocotb testbench, so the skeleton must enumerate every one.
+    # Single-clock designs (case1/4) keep the legacy single-object form so
+    # the official public-example schema is unchanged.
+    def _clk_obj(c: dict) -> dict:
+        return {"signal": c["name"], "period_ns": c.get("period_ns", 10),
+                "implementation": cr.get("clock_source", "")}
+
+    def _rst_obj(r: dict) -> dict:
+        active = "high" if r.get("active_level", 1) == 1 else "low"
+        return {
+            "signal": r["name"],
+            "active_level": active,
+            "active_high_cycles": cr.get("reset_assert_cycles", 0),
+            "post_reset_idle_cycles": cr.get("reset_deassert_after_cycles", 0),
+            "duration_cycles": r.get("duration_cycles", 5),
+            "implementation": "",
+        }
+
+    if len(clocks) == 1:
+        clock_block: dict = {"clock": _clk_obj(clocks[0])}
+    elif clocks:
+        clock_block = {"clocks": [_clk_obj(c) for c in clocks]}
+    else:
+        clock_block = {"clock": {"signal": "clk", "period_ns": 10, "implementation": ""}}
+    if len(resets) == 1:
+        reset_block: dict = {"reset": _rst_obj(resets[0])}
+    elif resets:
+        reset_block = {"resets": [_rst_obj(r) for r in resets]}
+    else:
+        reset_block = {"reset": {"signal": "rst", "active_level": "high",
+                                  "active_high_cycles": 5, "post_reset_idle_cycles": 5,
+                                  "duration_cycles": 5, "implementation": ""}}
+
     sb = s.get("scoreboard") or {}
     return {"verification_skeleton": {
-        "clock_reset_generation": {
-            "clock": {"signal": clk, "period_ns": 10, "implementation": cr.get("clock_source", "")},
-            "reset": {
-                "signal": rst,
-                "active_high_cycles": cr.get("reset_assert_cycles", 0),
-                "post_reset_idle_cycles": cr.get("reset_deassert_after_cycles", 0),
-                "implementation": "",
-            },
-        },
+        "clock_reset_generation": {**clock_block, **reset_block},
         "input_drivers": input_drivers,
         "output_monitors": output_monitors,
         "scoreboard": {
